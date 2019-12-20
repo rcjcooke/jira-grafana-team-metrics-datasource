@@ -1,0 +1,25 @@
+{
+  "name": "jira-grafana-json-datasource",
+  "version": "1.0.0",
+  "description": "Jira Grafana JSON Datasource",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node -r esm server.js",
+    "debug": "node --nolazy --inspect-brk=9229 -r esm server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "body-parser": "^1.19.0",
+    "dateformat": "^3.0.3",
+    "dotenv": "^8.2.0",
+    "esm": "^3.2.25",
+    "express": "^4.17.1",
+    "jira-connector": "^2.16.1",
+    "morgan": "^1.9.1",
+    "passport": "^0.4.0",
+    "passport-anonymous": "^1.0.1",
+    "passport-http": "^0.3.0"
+  }
+}
