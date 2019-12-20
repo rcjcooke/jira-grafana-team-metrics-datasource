@@ -6,7 +6,7 @@ import passport from 'passport';
 import { BasicStrategy } from 'passport-http';
 import AnonymousStrategy from 'passport-anonymous';
 import dateformat from 'dateformat'
-import { config } from 'dotenv';
+import dotenv from 'dotenv';
 
 /* ========================== */
 /* CONSTANTS                  */
@@ -48,14 +48,15 @@ const STATUSES = [
 /* ========================== */
 
 /* The HTTP Server */
+dotenv.config();
 const gApp = express();
 
 /* The Jira client and related variables */
 const gJira = new JiraClient({
-  host: 'flexciton.atlassian.net',
+  host: process.env.JIRA_HOST,
   basic_auth: {
-    username: 'ray.cooke@flexciton.com',
-    password: 'UHLmO0i8PofwFbuvGDh602CF'
+    username: process.env.JIRA_USERNAME,
+    password: process.env.JIRA_PASSWORD
   }
 });
 let gAuthenticationStrategy = null;
