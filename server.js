@@ -407,7 +407,7 @@ function getPromiseForMetric(window, target, result) {
     case METRICS[1]: return getRolling2WeekVelocityPromise(window, target, result);
     case METRICS[2]: return getCurrent2WeekAverageCycleTimePerPointPromise(window, target, result);
     case METRICS[3]: return getRolling2WeekAverageCycleTimePerPointPromise(window, target, result);
-    case METRICS[4]: return getReleaseProgressPromise(target, result);
+    case METRICS[4]: return getReleaseProgressPromises(target, result);
     case METRICS[5]: return getAcceptanceCriteriaConformancePromise(target, result);
     case METRICS[6]: return getNewTicketsStartedLastWeekPromise(target, result);
     case METRICS[7]: return getTicketsFinishedLastWeekPromise(target, result);
@@ -1042,7 +1042,22 @@ function getAcceptanceCriteriaConformancePromise(target, result) {
 
 }
 
-function getReleaseProgressPromise(target, result, versionId = getVersionId(target)) {
+/**
+ * 
+ * @param {*} target 
+ * @param {*} result 
+ * @return an array of Promises, one for each version ID
+ */
+function getReleaseProgressPromises(target, result) {
+  let versionIds = getVersionIds(target);
+  let p = [];
+  versionIds.forEach(versionId => {
+    p.push(getReleaseProgressPromise(target, result, versionId));
+  });
+  return p;
+}
+
+function getReleaseProgressPromise(target, result, versionId) {
   return gJira.version.getVersion({versionId: versionId, expand: ["issuesstatus"]}).then((jiraRes) => {
 
     let done = jiraRes.issuesStatusForFixVersion.done;
@@ -1061,7 +1076,7 @@ function getReleaseProgressPromise(target, result, versionId = getVersionId(targ
     if (target.type == 'table') {
 
       return result.push({
-        target: target,
+        target: jiraRes.name,
         columns: [
           {text: "Time", type: "time"},
           {text: "Status", type: "string"},
@@ -1249,19 +1264,19 @@ function getReleaseId(target) {
 /**
  * 
  * @param {*} target 
- * @return {number} the target version ID
+ * @return {number} an array of target version IDs
  */
-function getVersionId(target) {
+function getVersionIds(target) {
   // Default status is Deploy Queue
-  let versionId = 0;
+  let versionIds = [];
   if (target.hasOwnProperty('data')) {
     if (target.data != null) {
-      if (target.data.hasOwnProperty('versionId')) {
-        versionId = target.data.versionId;
+      if (target.data.hasOwnProperty('versionIds')) {
+        versionIds = target.data.versionIds;
       }
     }
   }
-  return versionId;
+  return versionIds;
 }
 
 /**
@@ -1687,6 +1702,8 @@ gApp.post('/query',
     let p = httpReq.body.targets.map(target => {
       return getPromiseForMetric(window, target, result);
     });
+
+    p = p.flat();
 
     // Once all promises resolve, return result
     Promise.all(p).then(() => {
