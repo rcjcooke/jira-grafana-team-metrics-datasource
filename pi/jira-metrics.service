@@ -1,0 +1,11 @@
+[Service]
+WorkingDirectory=/home/pi/dev/jira-grafana-team-metrics-datasource
+ExecStart=npm start
+Restart=always
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=jira-metrics
+User=pi
+Group=pi
+[Install]
+WantedBy=multi-user.target
