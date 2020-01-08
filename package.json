@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "startrpi": "node --max-old-space-size=512 -r esm server.js",
     "start": "node -r esm server.js",
     "debug": "node --nolazy --inspect-brk=9229 -r esm server.js"
   },
