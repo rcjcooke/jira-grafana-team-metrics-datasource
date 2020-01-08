@@ -8,6 +8,23 @@ Grafana Datasource that connects to JIRA and analyses data to produce team manag
 
 ## Running on a Raspberry PI
 
+Make aure the Simple JSON plugin is installed on your grafana instance:
+
+`sudo grafana-cli plugins install simpod-json-datasource`
+
+Set up the datasource:
+
+1. Add new datasource in the Grafana UI
+2. Name: JSON
+3. URL: http://localhost:3030
+4. Everything else turned off
+
+Set up the dashboard:
+
+1. Go to manage dashboards on the Grafana UI
+2. Click "Upload JSON"
+3. Navigate to the json file in the grafana sub-directory of this project on your lcoal machine and import it
+
 To run this as a service on a rasperry pi:
 
 1. `sudo cp jira-metrics.service /etc/systemd/system/`
