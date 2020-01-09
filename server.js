@@ -40,6 +40,7 @@ const STATUSES = [
   'Deploy Queue',
   'Deploy',
   'Deployed',
+  'Not Doing',
   'Done',
 ];
 
@@ -432,13 +433,8 @@ function getReleaseProjectionPromise(window, target, result) {
 
   return getScopeAndBurnupCacheUpdatePromise(window, releaseId, true).then(() => {
 
-    return addBurnupProjectionFromCache(window, target, gReleaseScopeAndBurnupDataCache[releaseId], result);
-  
-  });
+    let burnupCache = gReleaseScopeAndBurnupDataCache[releaseId];
 
-}
-
-function addBurnupProjectionFromCache(window, target, burnupCache, result) {
     // Calculate scope and burnup series
     let scopeData = burnupCache.scopeData.filter(value => {return value[1] >= Math.floor(window.from)});
     result.push({
@@ -452,85 +448,134 @@ function addBurnupProjectionFromCache(window, target, burnupCache, result) {
       datapoints: burnupData
     });
     padStartToWindow(burnupData, window);
-
-    // Calculate projection (if we need one)
+    
+    // Only add projections if we need to
     if (window.to > window.now) {
-      /* NOTE: For now we're assuming we take the actual best and worst case velocities.
-              We could use percentages either side of current velocity instead, or indeed
-              pre-defined velocities. This could be configurable.
-      */
-      let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
-      let projectKey = getProjectKey(target);
-      return getVelocityCacheUpdatePromise(window, futureStatuses, projectKey).then(() => {
-        // Calculate current, best and worse case velocities (assume 2 week rolling average)
-        // Make sure we're restricting velocity choices to the displayed window
-        let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
-        let minV = velocities[0][0];
-        let maxV = velocities[0][0];
-        let curV = velocities[velocities.length-1][0];
-        velocities.forEach(velocityPoint => {
-          let curV = velocityPoint[0];
-          minV = Math.min(curV, minV);
-          maxV = Math.max(curV, maxV);
-        });
+      return getBurnupProjectionFromCachePromise(window, target, scopeData, burnupData, result);
+    } else {
+      return result;
+    }
+  
+  });
 
-        // Work out what the burnup projection would be at the end of the range
-        let timeDiffFortnights = (window.to.getTime() - window.now.getTime())/(1000*60*60*24*14);
-        let scopeNow = scopeData[scopeData.length-1][0];
-        let doneScopeNow = burnupData[burnupData.length-1][0];
-        let maxVScope = doneScopeNow + timeDiffFortnights * maxV;
-        let curVScope = doneScopeNow + timeDiffFortnights * curV;
-        let minVScope = doneScopeNow + timeDiffFortnights * minV;
-        result.push({
-          target: "Max V projection",
-          datapoints: [
-            [doneScopeNow, Math.floor(window.now)],
-            [maxVScope, Math.floor(window.to)]
-          ]
-        });
-        result.push({
-          target: "Cur V projection",
-          datapoints: [
-            [doneScopeNow, Math.floor(window.now)],
-            [curVScope, Math.floor(window.to)]
-          ]
-        });
-        result.push({
-          target: "Min V projection",
-          datapoints: [
-            [doneScopeNow, Math.floor(window.now)],
-            [minVScope, Math.floor(window.to)]
-          ]
-        });
-        result.push({
-          target: "Scope projection",
-          datapoints: [
-            [scopeNow, Math.floor(window.now)],
-            [scopeNow, Math.floor(window.to)]
-          ]
-        });
-        // Add the time vertical interception lines, including "now"
-        // TODO
+}
 
-        let highestPoint = Math.max(...scopeData.map((value) => {return value[0]}));
-        highestPoint = Math.max(highestPoint, maxVScope, ...burnupData.map((value) => {return value[0]}));
+function getDetermineVelocityLimitsPromise(window, target) {
 
-        result.push({
-          target: "Now",
-          datapoints: [
-            [0, Math.floor(window.now)],
-            [Math.max(highestPoint, maxVScope), Math.floor(window.now)]
-          ]
-        });
+  let vSource = getVelocitySource(target);
+  switch (vSource) {
+    // TODO: Add Percentile at a later date
+    case "Explicit":
+      return Promise.resolve(getVelocityBounds(target));
+    case "Limits":
+    default:
+      return getVelocityBoundsFromHistoricDataPromise(window, target);
+  }
 
-        // Add the target release date as a vertical
-        // TODO
+}
 
-        return result;
+/**
+ * 
+ * @param {*} window 
+ * @param {*} target 
+ * @return {{max: number, cur: number, min: number}} a object containing the bounds of the velocity
+ */
+function getVelocityBoundsFromHistoricDataPromise(window, target) {
+  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let projectKey = getProjectKey(target);
+  return getVelocityCacheUpdatePromise(window, futureStatuses, projectKey).then(() => {
+    // Calculate current, best and worst case velocities (assume 2 week rolling average)
+    // Make sure we're restricting velocity choices to the displayed window
+    let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
+    let minV = velocities[0][0];
+    let maxV = velocities[0][0];
+    let curV = velocities[velocities.length-1][0];
+    velocities.forEach(velocityPoint => {
+      let curV = velocityPoint[0];
+      minV = Math.min(curV, minV);
+      maxV = Math.max(curV, maxV);
+    });
 
-      }); // getVelocityCacheUpdatePromise.then
-    } // if
+    return {
+      max: maxV,
+      cur: curV,
+      min: minV
+    }
+  });
+}
+
+/**
+ * 
+ * @param {*} window 
+ * @param {*} target 
+ * @param {*} scopeData 
+ * @param {*} burnupData 
+ * @param {*} result 
+ * @return {PromiseLike|{target: string, datapoints: [number, number][]}[]} Eventually this returns "result" populated with more data. It may return a Promise to do so if additional async calls to JIRA need to be made.
+ */
+function getBurnupProjectionFromCachePromise(window, target, scopeData, burnupData, result) {
+
+  return getDetermineVelocityLimitsPromise(window, target).then((vBounds) => {
+
+    // Work out what the burnup projection would be at the end of the range
+    let timeDiffFortnights = (window.to.getTime() - window.now.getTime())/(1000*60*60*24*14);
+    let scopeNow = scopeData[scopeData.length-1][0];
+    let doneScopeNow = burnupData[burnupData.length-1][0];
+    let maxVScope = doneScopeNow + timeDiffFortnights * vBounds.max;
+    let curVScope = doneScopeNow + timeDiffFortnights * vBounds.cur;
+    let minVScope = doneScopeNow + timeDiffFortnights * vBounds.min;
+    result.push({
+      target: "Max V projection",
+      datapoints: [
+        [doneScopeNow, Math.floor(window.now)],
+        [maxVScope, Math.floor(window.to)]
+      ]
+    });
+    result.push({
+      target: "Cur V projection",
+      datapoints: [
+        [doneScopeNow, Math.floor(window.now)],
+        [curVScope, Math.floor(window.to)]
+      ]
+    });
+    result.push({
+      target: "Min V projection",
+      datapoints: [
+        [doneScopeNow, Math.floor(window.now)],
+        [minVScope, Math.floor(window.to)]
+      ]
+    });
+    result.push({
+      target: "Scope projection",
+      datapoints: [
+        [scopeNow, Math.floor(window.now)],
+        [scopeNow, Math.floor(window.to)]
+      ]
+    });
+
+    let highestPoint = Math.max(...scopeData.map((value) => {return value[0]}));
+    highestPoint = Math.max(highestPoint, maxVScope, ...burnupData.map((value) => {return value[0]}));
+
+    // Add the time vertical interception lines, including "now"
+    addVerticalLine(window.now, "Now", highestPoint, result);
+    // TODO: Other interceptors
+    // Add the target release date as a vertical
+    // TODO: In future, get this from JIRA using a version information request
+    addVerticalLine(getTargetReleaseDate(target), "Target", highestPoint, result);
+
     return result;
+
+  });
+}
+
+function addVerticalLine(datetime, targetName, maxVerticalPoint, result) {
+  result.push({
+    target: targetName,
+    datapoints: [
+      [0, Math.floor(datetime)],
+      [maxVerticalPoint, Math.floor(datetime)]
+    ]
+  });
 }
 
 /**
@@ -1213,7 +1258,6 @@ function getFromStatus(target) {
  * @return {string} the target project key (e.g. 'ENG')
  */
 function getProjectKey(target) {
-  // Default project key is null (which means all projects)
   let projectKey = null;
   if (target.hasOwnProperty('data')) {
     if (target.data != null) {
@@ -1223,6 +1267,57 @@ function getProjectKey(target) {
     }
   }
   return projectKey;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {string} The velocity source, either "Explicit" or "Limits" only at the moment
+ */
+function getVelocitySource(target) {
+  let vSource = "Limits";
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('vSource')) {
+        vSource = target.data.vSource;
+      }
+    }
+  }
+  return vSource;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {{max: number, cur: number, min: number}} a object containing the bounds of the velocity
+ */
+function getVelocityBounds(target) {
+  let vBounds = {max: 0, cur: 0, min: 0};
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('vBounds')) {
+        vBounds = target.data.vBounds;
+      }
+    }
+  }
+  return vBounds;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {Date} The release date
+ */
+function getTargetReleaseDate(target) {
+  let releaseDate = new Date();
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('releaseDate')) {
+        releaseDate = new Date(target.data.releaseDate);
+      }
+    }
+  }
+  return releaseDate;
 }
 
 /**
@@ -1703,6 +1798,7 @@ gApp.post('/query',
       return getPromiseForMetric(window, target, result);
     });
 
+    // Flatten the first level of promise hierarchy (as the getReleasePromise can return multiple promises, one for each release)
     p = p.flat();
 
     // Once all promises resolve, return result
