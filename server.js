@@ -981,8 +981,6 @@ function maintainVersionMap(versionIssueMap, versionId, issue, addToVersion) {
  */
 function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease) {
 
-  console.info("Entered calculateScopeAndBurnupTimeseries");
-
   // Work through the events in time, building up an in-memory record of issues and scope changes
   let scopeData = [];
   let burnupData = [];
@@ -1202,8 +1200,6 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
     burnupData: burnupData,
     lastUpdateTime: window.now >= window.to ? window.to : window.now
   }
-
-  console.info("Exited calculateScopeAndBurnupTimeseries");
 
 }
 
