@@ -6,6 +6,33 @@ Grafana Datasource that connects to JIRA and analyses data to produce team manag
 * If using VS Code, run a debug session using the "Launch via npm" configuration
 * From the command link run it with npm using `npm start`
 
+## Dashboard query configuration
+Many of the queries the service supports have required and optional parameters supplied using custom JSON input data such as in the image below.
+
+![JSON Config Data Example Screenshot](docs/JSONConfigDataExample.png)
+
+The configuration options for each metric are specified here.
+
+### Current 2 week velocity
+
+Example: `{"toStatus": "Deployed", "projectKey": "ENG"}`
+
+| Key | Description | Possible Values | Descriptions |
+| --- | ----------- | --------------- | ------------ |
+| toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+
+### Rolling 2 week velocity
+
+Example: `{"toStatus": "Deployed", "projectKey": "ENG"}`
+
+| Key | Description | Possible Values | Descriptions |
+| --- | ----------- | --------------- | ------------ |
+| toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+
+
+
 ## Running on a Raspberry PI
 
 Make aure the Simple JSON plugin is installed on your grafana instance:
