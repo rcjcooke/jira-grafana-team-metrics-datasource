@@ -81,7 +81,6 @@ let gCycleTimeCache = {}; // The cache of cycle times - measured in days per poi
 
 let gReleaseScopeAndBurnupDataCache = {}; // id => {scopeData: [[scope, Math.floor(Date)]], burnupData: [[scope, Math.floor(Date)]], lastUpdateTime: Date}
 let gInitiativeScopeAndBurnupDataCache = {}; // id => {scopeData: [[scope, Math.floor(Date)]], burnupData: [[scope, Math.floor(Date)]], lastUpdateTime: Date}
-let gVersionIssueMap = {}; // Version map - [versionId: [issue]]
 
 /* ========================== */
 /* INITIALISATION             */
@@ -460,7 +459,7 @@ function unsafeGetScopeAndBurnupCacheUpdatePromise(requestId, window, targetId, 
   if (scopeAndBurnupDataCache == null || outOfDate) {
     return getFullEventLogCacheUpdatePromise(requestId, window).then( (eventLog) => {
 
-      console.info(requestId + ": Executing getScopeAndBurnupCacheUpdatePromise (targetId=" + targetId + ")");
+      console.info(requestId + ": Executing getScopeAndBurnupCacheUpdatePromise (targetId=" + targetId + ", eventLogLength=" + eventLog.length + ")");
       calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease);
     });
 
@@ -714,11 +713,11 @@ function getParentIdentifier(issue, idType) {
   }
 }
 
-function calculateVersionSize(versionId) {
+function calculateVersionSize(versionIssueMap, versionId) {
   let totalSize = 0;
-  let versionIssues = gVersionIssueMap[versionId];
+  let versionIssues = versionIssueMap[versionId];
   if (versionIssues != null) {
-    gVersionIssueMap[versionId].forEach(i => {
+    versionIssueMap[versionId].forEach(i => {
       totalSize += i.size;
     });
   }
@@ -947,13 +946,13 @@ function calculateTotalSize(issue, onlyResolved) {
  * @param {*} issue The issue we're adding or removing
  * @param {*} addToVersion if true then we add the issue to version, otherwise we remove it
  */
-function maintainVersionMap(versionId, issue, addToVersion) {
+function maintainVersionMap(versionIssueMap, versionId, issue, addToVersion) {
   // Prep for Maintain the version Index Map
   let versionIssueArray = [];
-  if (gVersionIssueMap.hasOwnProperty(versionId)) {
-    versionIssueArray = gVersionIssueMap[versionId];
+  if (versionIssueMap.hasOwnProperty(versionId)) {
+    versionIssueArray = versionIssueMap[versionId];
   } else {
-    gVersionIssueMap[versionId] = versionIssueArray;
+    versionIssueMap[versionId] = versionIssueArray;
   }
 
   let versionMapIndex = versionIssueArray.findIndex(vIssue => {return vIssue.id == issue.id});
@@ -981,6 +980,9 @@ function maintainVersionMap(versionId, issue, addToVersion) {
  * @param {boolean} isRelease if true, then the ID specified is a Release ID, otherwise it's an initiative ID
  */
 function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease) {
+
+  console.info("Entered calculateScopeAndBurnupTimeseries");
+
   // Work through the events in time, building up an in-memory record of issues and scope changes
   let scopeData = [];
   let burnupData = [];
@@ -997,7 +999,7 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
   let previousTotalDoneSize = null;
 
   // Clear off the version map
-  gVersionIssueMap = {};
+  let versionIssueMap = {};
 
   for (let eventIndex = 0; eventIndex < eventLog.length; eventIndex++) {
     const event = eventLog[eventIndex];
@@ -1017,7 +1019,7 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
         parentId: event.eventDetails.parentId,
         parentKey: event.eventDetails.parentKey,
         children: [],
-        versions: event.eventDetails.versions
+        versions: [...event.eventDetails.versions]
       }
 
       issuesAtTime[issue.id] = issue;
@@ -1025,7 +1027,7 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
 
       // Update the version map
       issue.versions.forEach(versionId => {
-        maintainVersionMap(versionId, issue, true);
+        maintainVersionMap(versionIssueMap, versionId, issue, true);
       })
 
       if (!isRelease && isChildOf(issuesAtTime, keyToIdMap, issue, targetId)) {
@@ -1136,7 +1138,7 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
       if (event.event == "addVersion") {
         issue.versions.push(versionId);
 
-        maintainVersionMap(versionId, issue, true);
+        maintainVersionMap(versionIssueMap, versionId, issue, true);
         
       } else {
         let versionIndex = issue.versions.findIndex(version => {return version == versionId});
@@ -1146,7 +1148,7 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
           console.warn("Tried to remove version " + versionId + " from issue " + issue.key + " but version was not present. Possible event log processing failure.");
         }
 
-        maintainVersionMap(versionId, issue, false);
+        maintainVersionMap(versionIssueMap, versionId, issue, false);
       }
 
       // Calculate size changes
@@ -1200,6 +1202,8 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
     burnupData: burnupData,
     lastUpdateTime: window.now >= window.to ? window.to : window.now
   }
+
+  console.info("Exited calculateScopeAndBurnupTimeseries");
 
 }
 
