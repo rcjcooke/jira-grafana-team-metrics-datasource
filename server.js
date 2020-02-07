@@ -5,8 +5,9 @@ import morgan from 'morgan';
 import passport from 'passport';
 import { BasicStrategy } from 'passport-http';
 import AnonymousStrategy from 'passport-anonymous';
-import dateformat from 'dateformat'
+import dateformat from 'dateformat';
 import dotenv from 'dotenv';
+import AsyncLock from 'async-lock';
 
 /* ========================== */
 /* CONSTANTS                  */
@@ -63,6 +64,8 @@ const gJira = new JiraClient({
 let gAuthenticationStrategy = null;
 
 /* The data caches and related control variables */
+let gCacheManagementLock = new AsyncLock();
+
 let gFullIssueArrayCache = []; // The full and updated array of issues we care about
 let gFullIssueArrayCacheLastUpdateTime = null; // The last time the issue array cache was updated
 
@@ -78,6 +81,7 @@ let gCycleTimeCache = {}; // The cache of cycle times - measured in days per poi
 
 let gReleaseScopeAndBurnupDataCache = {}; // id => {scopeData: [[scope, Math.floor(Date)]], burnupData: [[scope, Math.floor(Date)]], lastUpdateTime: Date}
 let gInitiativeScopeAndBurnupDataCache = {}; // id => {scopeData: [[scope, Math.floor(Date)]], burnupData: [[scope, Math.floor(Date)]], lastUpdateTime: Date}
+let gVersionIssueMap = {}; // Version map - [versionId: [issue]]
 
 /* ========================== */
 /* INITIALISATION             */
@@ -120,7 +124,23 @@ init();
 /* CACHE MANAGEMENT           */
 /* ========================== */
 
-function getFullIssueArrayCacheUpdatePromise(window, extraIssues = [], startAt = 0) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} extraIssues 
+ * @param {*} startAt 
+ */
+function getFullIssueArrayCacheUpdatePromise(requestId, window, extraIssues = [], startAt = 0) {
+  return gCacheManagementLock.acquire("fullIssueArrayCache", () => {
+    return unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssues, startAt);
+  }).then( (result) => {
+    // lock released
+    return result;
+  });
+}
+
+function unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssues = [], startAt = 0) {
   let outOfDate = true;
   if (gFullIssueArrayCacheLastUpdateTime != null) {
     outOfDate = window.to > window.now ? window.now > gFullIssueArrayCacheLastUpdateTime : window.to > gFullIssueArrayCacheLastUpdateTime;
@@ -142,6 +162,8 @@ function getFullIssueArrayCacheUpdatePromise(window, extraIssues = [], startAt =
       let totalResults = jiraRes.total;
       let maxResults = jiraRes.maxResults;
 
+      console.info(requestId + ": Executing getFullIssueArrayCacheUpdatePromise (maxResults=" + totalResults + ", startAt=" + startAt + ")");
+
       // Update any existing and add any new issues
       let newIssues = jiraRes.issues.filter((issue) => {
         let cacheIndex = binarySearchIssueIndex(gFullIssueArrayCache, issue.id);
@@ -158,7 +180,7 @@ function getFullIssueArrayCacheUpdatePromise(window, extraIssues = [], startAt =
 
       // If we haven't got all the results yet then keep building the array
       if (startAt + maxResults < totalResults) {
-        return getFullIssueArrayCacheUpdatePromise(window, extraIssues, startAt + maxResults);
+        return unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssues, startAt + maxResults);
       }
 
       if (extraIssues.length > 0) {
@@ -178,15 +200,31 @@ function getFullIssueArrayCacheUpdatePromise(window, extraIssues = [], startAt =
   }
 }
 
-function getFullEventLogCacheUpdatePromise(window) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ */
+function getFullEventLogCacheUpdatePromise(requestId, window) {
+  return gCacheManagementLock.acquire("fullEventLogCache", () => {
+    return unsafeGetFullEventLogCacheUpdatePromise(requestId, window);
+  }).then( (result) => {
+    // lock released
+    return result;
+  });
+}
+
+function unsafeGetFullEventLogCacheUpdatePromise(requestId, window) {
+
   let outOfDate = true;
   if (gFullEventLogCacheLastUpdateTime != null) {
     outOfDate = window.to > window.now ? window.now > gFullEventLogCacheLastUpdateTime : window.to > gFullEventLogCacheLastUpdateTime;
   }
 
   if (outOfDate) {
-    return getFullIssueArrayCacheUpdatePromise(window).then( (fullIssuesArray) => {
+    return getFullIssueArrayCacheUpdatePromise(requestId, window).then( (fullIssuesArray) => {
 
+      console.info(requestId + ": Executing getFullEventLogCacheUpdatePromise");
       gFullEventLogCache = calculateFullEventLog(fullIssuesArray);
       gFullEventLogCacheLastUpdateTime = gFullIssueArrayCacheLastUpdateTime;
 
@@ -197,16 +235,28 @@ function getFullEventLogCacheUpdatePromise(window) {
   }
 }
 
+function getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey) {
+  return gCacheManagementLock.acquire("velocityCache", () => {
+    return unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey);
+  }).then( (result) => {
+    // lock released
+    return result;
+  });
+}
+
 /**
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
  * @param {*} futureStatuses 
  * @param {*} projectKey 
  */
-function getVelocityCacheUpdatePromise(window, futureStatuses, projectKey) {
+function unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey) {
 
   if (gVelocityCacheWindow == null || window.to > gVelocityCacheWindow.to || window.intervalMs != gVelocityCacheWindow.intervalMs || futureStatuses != gVelocityCacheFutureStatuses || gVelocityCacheProjectKey != projectKey) {
-    return getFullIssueArrayCacheUpdatePromise(window).then((fullIssuesArray) => {
+    return getFullIssueArrayCacheUpdatePromise(requestId, window).then((fullIssuesArray) => {
+
+      console.info(requestId + ": Executing getVelocityCacheUpdatePromise (projectKey=" + projectKey + ")");
 
       // Filter out Epics and Initiatives
       let filteredIssueArray = fullIssuesArray.filter((issue) => {
@@ -275,14 +325,24 @@ function getVelocityCacheUpdatePromise(window, futureStatuses, projectKey) {
   }
 }
 
+function getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey) {
+  return gCacheManagementLock.acquire("cycleTimeCache", () => {
+    return unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey);
+  }).then( (result) => {
+    // lock released
+    return result;
+  });
+}
+
 /**
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
  * @param {*} fromStatuses 
  * @param {*} futureStatuses 
  * @param {*} projectKey 
  */
-function getCycleTimeCacheUpdatePromise(window, fromStatuses, futureStatuses, projectKey) {
+function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey) {
 
   let cache = gCycleTimeCache[projectKey];
   let outOfDate = true;
@@ -296,7 +356,7 @@ function getCycleTimeCacheUpdatePromise(window, fromStatuses, futureStatuses, pr
   }
   if (cache == null || outOfDate) {
 
-    return getFullIssueArrayCacheUpdatePromise(window).then((fullIssuesArray) => {
+    return getFullIssueArrayCacheUpdatePromise(requestId, window).then((fullIssuesArray) => {
 
       // Filter out Epics and Initiatives
       let filteredIssueArray = fullIssuesArray.filter((issue) => {
@@ -375,15 +435,32 @@ function getCycleTimeCacheUpdatePromise(window, fromStatuses, futureStatuses, pr
   }
 }
 
-function getScopeAndBurnupCacheUpdatePromise(window, targetId, isRelease) {
+function getScopeAndBurnupCacheUpdatePromise(requestId, window, targetId, isRelease) {
+  return gCacheManagementLock.acquire("scopeAndBurnupCache", () => {
+    return unsafeGetScopeAndBurnupCacheUpdatePromise(requestId, window, targetId, isRelease);
+  }).then( (result) => {
+    // lock released
+    return result;
+  });
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} targetId 
+ * @param {*} isRelease 
+ */
+function unsafeGetScopeAndBurnupCacheUpdatePromise(requestId, window, targetId, isRelease) {
   let scopeAndBurnupDataCache = isRelease ? gReleaseScopeAndBurnupDataCache[targetId] : gInitiativeScopeAndBurnupDataCache[targetId];
   let outOfDate = true;
   if (scopeAndBurnupDataCache != null) {
     outOfDate = window.to > window.now ? window.now > scopeAndBurnupDataCache.lastUpdateTime : window.to > scopeAndBurnupDataCache.lastUpdateTime;
   }
   if (scopeAndBurnupDataCache == null || outOfDate) {
-    return getFullEventLogCacheUpdatePromise(window).then( (eventLog) => {
+    return getFullEventLogCacheUpdatePromise(requestId, window).then( (eventLog) => {
 
+      console.info(requestId + ": Executing getScopeAndBurnupCacheUpdatePromise (targetId=" + targetId + ")");
       calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease);
     });
 
@@ -397,42 +474,44 @@ function getScopeAndBurnupCacheUpdatePromise(window, targetId, isRelease) {
 /* ========================== */
 
 /**
- * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
  * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
  * @param {*} result The result
  */
-function getPromiseForMetric(window, target, result) {
+function getPromisesForMetric(requestId, window, target, result) {
   switch (target.target) {
-    case METRICS[0]: return getCurrent2WeekVelocityPromise(window, target, result);
-    case METRICS[1]: return getRolling2WeekVelocityPromise(window, target, result);
-    case METRICS[2]: return getCurrent2WeekAverageCycleTimePerPointPromise(window, target, result);
-    case METRICS[3]: return getRolling2WeekAverageCycleTimePerPointPromise(window, target, result);
-    case METRICS[4]: return getReleaseProgressPromises(target, result);
-    case METRICS[5]: return getAcceptanceCriteriaConformancePromise(target, result);
-    case METRICS[6]: return getNewTicketsStartedLastWeekPromise(target, result);
-    case METRICS[7]: return getTicketsFinishedLastWeekPromise(target, result);
-    case METRICS[8]: return getHighVizTicketsPromise(target, result);
-    case METRICS[9]: return getInitiativeProjectionPromise(window, target, result);
-    case METRICS[10]: return getReleaseProjectionPromise(window, target, result);
+    case METRICS[0]: return getCurrent2WeekVelocityPromise(requestId, window, target, result);
+    case METRICS[1]: return getRolling2WeekVelocityPromise(requestId, window, target, result);
+    case METRICS[2]: return getCurrent2WeekAverageCycleTimePerPointPromise(requestId, window, target, result);
+    case METRICS[3]: return getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, target, result);
+    case METRICS[4]: return getReleaseProgressPromises(requestId, window, target, result);
+    case METRICS[5]: return getAcceptanceCriteriaConformancePromise(requestId, target, result);
+    case METRICS[6]: return getNewTicketsStartedLastWeekPromise(requestId, target, result);
+    case METRICS[7]: return getTicketsFinishedLastWeekPromise(requestId, target, result);
+    case METRICS[8]: return getHighVizTicketsPromise(requestId, target, result);
+    case METRICS[9]: return getInitiativeProjectionPromise(requestId, window, target, result);
+    case METRICS[10]: return getReleaseProjectionPromise(requestId, window, target, result);
   }
 }
 
 /**
  * Calculates a release scope, burnup and projection dataset for an initiative
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
  * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
  * @param {{target: string, datapoints: [[]]}[]} result 
  * @return {Promise}
  */
-function getReleaseProjectionPromise(window, target, result) {
+function getReleaseProjectionPromise(requestId, window, target, result) {
 
   // Get the initiative we're projecting
   let releaseId = getReleaseId(target);
 
-  return getScopeAndBurnupCacheUpdatePromise(window, releaseId, true).then(() => {
+  return getScopeAndBurnupCacheUpdatePromise(requestId, window, releaseId, true).then(() => {
 
+    console.info(requestId + ": Executing getReleaseProjectionPromise (releaseId=" + releaseId + ")");
     let burnupCache = gReleaseScopeAndBurnupDataCache[releaseId];
 
     // Calculate scope and burnup series
@@ -451,7 +530,7 @@ function getReleaseProjectionPromise(window, target, result) {
     
     // Only add projections if we need to
     if (window.to > window.now) {
-      return getBurnupProjectionFromCachePromise(window, target, scopeData, burnupData, result);
+      return getBurnupProjectionFromCachePromise(requestId, window, target, scopeData, burnupData, result);
     } else {
       return result;
     }
@@ -460,7 +539,13 @@ function getReleaseProjectionPromise(window, target, result) {
 
 }
 
-function getDetermineVelocityLimitsPromise(window, target) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} target 
+ */
+function getDetermineVelocityLimitsPromise(requestId, window, target) {
 
   let vSource = getVelocitySource(target);
   switch (vSource) {
@@ -469,21 +554,25 @@ function getDetermineVelocityLimitsPromise(window, target) {
       return Promise.resolve(getVelocityBounds(target));
     case "Limits":
     default:
-      return getVelocityBoundsFromHistoricDataPromise(window, target);
+      return getVelocityBoundsFromHistoricDataPromise(requestId, window, target);
   }
 
 }
 
 /**
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {*} window 
  * @param {*} target 
  * @return {{max: number, cur: number, min: number}} a object containing the bounds of the velocity
  */
-function getVelocityBoundsFromHistoricDataPromise(window, target) {
+function getVelocityBoundsFromHistoricDataPromise(requestId, window, target) {
   let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
   let projectKey = getProjectKey(target);
-  return getVelocityCacheUpdatePromise(window, futureStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+
+    console.info(requestId + ": Executing getVelocityBoundsFromHistoricDataPromise (projectKey=" + projectKey + ")");
+
     // Calculate current, best and worst case velocities (assume 2 week rolling average)
     // Make sure we're restricting velocity choices to the displayed window
     let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
@@ -506,6 +595,7 @@ function getVelocityBoundsFromHistoricDataPromise(window, target) {
 
 /**
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {*} window 
  * @param {*} target 
  * @param {*} scopeData 
@@ -513,9 +603,11 @@ function getVelocityBoundsFromHistoricDataPromise(window, target) {
  * @param {*} result 
  * @return {PromiseLike|{target: string, datapoints: [number, number][]}[]} Eventually this returns "result" populated with more data. It may return a Promise to do so if additional async calls to JIRA need to be made.
  */
-function getBurnupProjectionFromCachePromise(window, target, scopeData, burnupData, result) {
+function getBurnupProjectionFromCachePromise(requestId, window, target, scopeData, burnupData, result) {
 
-  return getDetermineVelocityLimitsPromise(window, target).then((vBounds) => {
+  return getDetermineVelocityLimitsPromise(requestId, window, target).then((vBounds) => {
+
+    console.info(requestId + ": Executing getBurnupProjectionFromCachePromise");
 
     // Work out what the burnup projection would be at the end of the range
     let timeDiffFortnights = (window.to.getTime() - window.now.getTime())/(1000*60*60*24*14);
@@ -581,17 +673,18 @@ function addVerticalLine(datetime, targetName, maxVerticalPoint, result) {
 /**
  * Calculates a release scope, burnup and projection dataset for an initiative
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
  * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
  * @param {{target: string, datapoints: [[]]}[]} result 
  * @return {Promise}
  */
-function getInitiativeProjectionPromise(window, target, result) {
+function getInitiativeProjectionPromise(requestId, window, target, result) {
 
   // Get the initiative we're projecting
   let initiativeId = getInitiativeId(target);
   
-  return getScopeAndBurnupCacheUpdatePromise(window, initiativeId, false).then(() => {
+  return getScopeAndBurnupCacheUpdatePromise(requestId, window, initiativeId, false).then(() => {
 
     return addBurnupProjectionFromCache(window, target, gInitiativeScopeAndBurnupDataCache[initiativeId], result);
 
@@ -621,10 +714,21 @@ function getParentIdentifier(issue, idType) {
   }
 }
 
+function calculateVersionSize(versionId) {
+  let totalSize = 0;
+  let versionIssues = gVersionIssueMap[versionId];
+  if (versionIssues != null) {
+    gVersionIssueMap[versionId].forEach(i => {
+      totalSize += i.size;
+    });
+  }
+  return totalSize;
+}
+
 /**
  * 
  * @param {*[]} issues A JIRA issues array
- * @return {{datetime: Date, issueId: number, event: string, eventDetails: {issueKey: string, size: number, type: string, parentKey: string, parentId: number, resolution: string, childId: number, versionId}}[]} a time ordered log of events
+ * @return {{datetime: Date, issueId: number, event: string, eventDetails: {issueKey: string, size: number, type: string, parentKey: string, parentId: number, resolution: string, childId: number, versionId: number, versions: number[]}}[]} a time ordered log of events
  */
 function calculateFullEventLog(issues) {
   let eventLog = [];
@@ -644,12 +748,14 @@ function calculateFullEventLog(issues) {
         type: issue.fields.issuetype.name,
         parentKey: getParentIdentifier(issue, "key"),
         parentId: getParentIdentifier(issue, "id"),
-        resolution: null
+        resolution: null,
+        versions: issue.fields.fixVersions.map(version => {return version.id})
       }
     }
 
     let parentChange = false;
     let sizeChange = false;
+    let doneCreationReverseForVersions = {};
 
     // Loop through all the events in this issue's history in order of event occurance (determined by ID number)
     issue.changelog.histories.sort( (a, b) => {return a.id - b.id}).forEach(change => {
@@ -699,12 +805,6 @@ function calculateFullEventLog(issues) {
             }
           });
 
-          // // Now check to see if we care about this one
-          // if (changeItem.to == initiativeId || changeItem.from == initiativeId) {
-          //   // It was added to the initiative
-          //   relevantEpicIds.push(issue.id);
-          // }
-
         } else if (changeItem.fieldId == "customfield_10016") {
           // customfield_10016 = Story Points
           // fromString / toString contain story point values, to/from are null
@@ -739,15 +839,35 @@ function calculateFullEventLog(issues) {
 
         } else if (changeItem.fieldId == "fixVersions") {
 
+          let versionId = (changeItem.from == null ? changeItem.to : changeItem.from);
           // Create the event
           eventLog.push({
             datetime: new Date(change.created),
             issueId: issue.id,
             event: (changeItem.from == null ? "addVersion" : "removeVersion"),
             eventDetails: {
-              versionId: (changeItem.from == null ? changeItem.to : changeItem.from)
+              versionId: versionId
             }
           });
+
+          // Reverse engineer the create event
+          // If we've had an add on a version that was already on the create event, then lets assume that it wasn't there to start off with - this will sometimes be wrong but there's nothing we can do about that.
+          if (!doneCreationReverseForVersions.hasOwnProperty(versionId)) {
+            if (changeItem.from == null) {
+              let versionIndex = createdEvent.eventDetails.versions.findIndex(vId => {return vId == versionId});
+              if (versionIndex != -1) {
+                // Remove that version from the list of versions that this ticket started with
+                createdEvent.eventDetails.versions.splice(versionIndex, 1);
+              }
+            } else {
+              let versionIndex = createdEvent.eventDetails.versions.findIndex(vId => {return vId == versionId});
+              if (versionIndex == -1) {
+                // Add that version to the list of versions that this ticket started with
+                createdEvent.eventDetails.versions.push(versionId);
+              }
+            }
+            doneCreationReverseForVersions[versionId] = true;
+          }
 
         } else if (changeItem.fieldId == "resolution") {
           eventLog.push({
@@ -764,6 +884,8 @@ function calculateFullEventLog(issues) {
     
     // Add the creation event to the log
     eventLog.push(createdEvent);
+
+//    console.debug("Processed events for issue " + issue.key);
   });
 
   // Sort the event log by event datetime in ascending order
@@ -820,8 +942,41 @@ function calculateTotalSize(issue, onlyResolved) {
 }
 
 /**
+ * 
+ * @param {*} versionId The version ID we're maintaining
+ * @param {*} issue The issue we're adding or removing
+ * @param {*} addToVersion if true then we add the issue to version, otherwise we remove it
+ */
+function maintainVersionMap(versionId, issue, addToVersion) {
+  // Prep for Maintain the version Index Map
+  let versionIssueArray = [];
+  if (gVersionIssueMap.hasOwnProperty(versionId)) {
+    versionIssueArray = gVersionIssueMap[versionId];
+  } else {
+    gVersionIssueMap[versionId] = versionIssueArray;
+  }
+
+  let versionMapIndex = versionIssueArray.findIndex(vIssue => {return vIssue.id == issue.id});
+  
+  if (addToVersion) {
+    if (versionMapIndex == -1) {
+      versionIssueArray.push(issue);
+    } else {
+      console.warn("Tried to add issue " + issue.key + " to version " + versionId + " but issue was already present. Possible event log processing failure.");
+    }
+  } else {
+    if (versionMapIndex == -1) {
+      console.warn("Tried to remove issue " + issue.key + " from version " + versionId + " but issue was already removed. Possible event log processing failure.");
+    } else {
+      versionIssueArray.splice(versionMapIndex, 1);
+    }
+  }
+
+}
+
+/**
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
- * @param {{datetime: Date, issueId: number, event: string, eventDetails: {issueKey: string, size: number, type: string, parentKey: string, parentId: number, resolution: string, childId: number, versionId}}[]} eventLog a time ordered log of events
+ * @param {{datetime: Date, issueId: number, event: string, eventDetails: {issueKey: string, size: number, type: string, parentKey: string, parentId: number, resolution: string, childId: number, versionId: number, versions: number[]}}[]} eventLog a time ordered log of events
  * @param {string} targetId The JIRA ID of the Initiative or Release we want to track the scope change of
  * @param {boolean} isRelease if true, then the ID specified is a Release ID, otherwise it's an initiative ID
  */
@@ -841,6 +996,9 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
   let totalDoneSize = 0;
   let previousTotalDoneSize = null;
 
+  // Clear off the version map
+  gVersionIssueMap = {};
+
   for (let eventIndex = 0; eventIndex < eventLog.length; eventIndex++) {
     const event = eventLog[eventIndex];
 
@@ -859,14 +1017,24 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
         parentId: event.eventDetails.parentId,
         parentKey: event.eventDetails.parentKey,
         children: [],
-        versions: []
+        versions: event.eventDetails.versions
       }
 
       issuesAtTime[issue.id] = issue;
       keyToIdMap[issue.key] = issue.id;
 
+      // Update the version map
+      issue.versions.forEach(versionId => {
+        maintainVersionMap(versionId, issue, true);
+      })
+
       if (!isRelease && isChildOf(issuesAtTime, keyToIdMap, issue, targetId)) {
         totalSize += calculateTotalSize(issue, false);
+      } else if (isRelease && (issue.type == 'Bug' || issue.type == 'Story')) {
+        // If it's a story or bug and was created in the taret release then it counts towards the scope
+        if (issue.versions.findIndex(v => {return v == targetId}) != -1) {
+          totalSize += calculateTotalSize(issue, false);
+        }
       }
 
     } else if (event.event == "parentChange") {
@@ -963,11 +1131,22 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
       let issue = issuesAtTime[event.issueId];
       let versionId = event.eventDetails.versionId;
       // Implement event
+
+      // Implement the event
       if (event.event == "addVersion") {
         issue.versions.push(versionId);
+
+        maintainVersionMap(versionId, issue, true);
+        
       } else {
         let versionIndex = issue.versions.findIndex(version => {return version == versionId});
-        if (versionIndex != -1) issue.versions.splice(versionIndex, 1);
+        if (versionIndex != -1) {
+          issue.versions.splice(versionIndex, 1);
+        } else {
+          console.warn("Tried to remove version " + versionId + " from issue " + issue.key + " but version was not present. Possible event log processing failure.");
+        }
+
+        maintainVersionMap(versionId, issue, false);
       }
 
       // Calculate size changes
@@ -991,6 +1170,11 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
     if (totalSize != previousTotalSize) {
       scopeData.push([totalSize, Math.floor(eventDateTime)]);
       previousTotalSize = totalSize;
+
+      // Cross-check version size
+      // let vSize = calculateVersionSize(targetId);
+      // console.debug(vSize);
+
     }
     // Record the burnup at this time
     if (totalDoneSize != previousTotalDoneSize) {
@@ -1019,7 +1203,13 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
 
 }
 
-function getHighVizTicketsPromise(target, result) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getHighVizTicketsPromise(requestId, target, result) {
 
   let jql = 'project = "ENG" AND labels = high-viz';
 
@@ -1050,21 +1240,39 @@ function getHighVizTicketsPromise(target, result) {
 
 }
 
-function getNewTicketsStartedLastWeekPromise(target, result) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getNewTicketsStartedLastWeekPromise(requestId, target, result) {
 
   let jql = ('project = "ENG" AND status changed from ("Prioritised") after -1w and status not in ("Backlog")');
   return getTicketsTableFromJQLPromise(target, result, jql);
 
 }
 
-function getTicketsFinishedLastWeekPromise(target, result) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getTicketsFinishedLastWeekPromise(requestId, target, result) {
 
   let jql = ('project = "ENG" AND status changed to ("Deploy Queue", Deploy, Deployed) after -1w and status in ("Deploy Queue", Deploy, Deployed)');
   return getTicketsTableFromJQLPromise(target, result, jql);
 
 }
 
-function getAcceptanceCriteriaConformancePromise(target, result) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getAcceptanceCriteriaConformancePromise(requestId, target, result) {
   // customfield_10060 = acceptance critera field
 
   let jql = ('project = "ENG" AND labels = high-viz');
@@ -1089,71 +1297,71 @@ function getAcceptanceCriteriaConformancePromise(target, result) {
 
 /**
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {*} target 
  * @param {*} result 
  * @return an array of Promises, one for each version ID
  */
-function getReleaseProgressPromises(target, result) {
+function getReleaseProgressPromises(requestId, window, target, result) {
   let versionIds = getVersionIds(target);
   let p = [];
   versionIds.forEach(versionId => {
-    p.push(getReleaseProgressPromise(target, result, versionId));
+    p.push(getReleaseProgressPromise(requestId, window, result, versionId));
   });
   return p;
 }
 
-function getReleaseProgressPromise(target, result, versionId) {
-  return gJira.version.getVersion({versionId: versionId, expand: ["issuesstatus"]}).then((jiraRes) => {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} result 
+ * @param {*} versionId 
+ */
+function getReleaseProgressPromise(requestId, window, result, versionId) {
 
-    let done = jiraRes.issuesStatusForFixVersion.done;
-    let inProgress = jiraRes.issuesStatusForFixVersion.inProgress;
-    let toDo = jiraRes.issuesStatusForFixVersion.toDo;
-    let unmapped = jiraRes.issuesStatusForFixVersion.unmapped;
+  let releaseName = "";
 
-    let dt = Math.floor(new Date());
+  let p = [];
+  p.push(getScopeAndBurnupCacheUpdatePromise(requestId, window, versionId, true));
+  p.push(gJira.version.getVersion({versionId: versionId}).then((jiraRes) => {
+    releaseName = jiraRes.name;
+  }));
 
-    // Calculate percentage complete
+  // Wait for the scope and burnup caches to be updated AND for the version information to update
+  return Promise.all(p).then(() => {
+
+    let cache = gReleaseScopeAndBurnupDataCache[versionId];
+    let done = cache.burnupData[cache.burnupData.length-1][0];
+    let scope = cache.scopeData[cache.scopeData.length-1][0];
+    
     let completePct = 0;
-    if (done + inProgress + toDo + unmapped != 0) {
-      completePct = done / (done + inProgress + toDo + unmapped) * 100;
+    if (scope != 0) {
+      completePct = done / scope * 100;
     }
 
-    if (target.type == 'table') {
+    return result.push({
+      target: releaseName,
+      datapoints: [[completePct, Math.floor(cache.lastUpdateTime)]]
+    });
 
-      return result.push({
-        target: jiraRes.name,
-        columns: [
-          {text: "Time", type: "time"},
-          {text: "Status", type: "string"},
-          {text: "Count", type: "number"}
-        ],
-        rows: [
-          [dt, "Done", done],
-          [dt, "In Progress", inProgress],
-          [dt, "To Do", toDo],
-          [dt, "Unmapped", unmapped]
-        ],
-        type: "table"
-      });
-
-    } else {
-      // 'timeseries'
-
-      return result.push({
-        target: jiraRes.name,
-        datapoints: [[completePct, dt]]
-      });
-    }
   });
 }
 
-function getCurrent2WeekAverageCycleTimePerPointPromise(window, target, result) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getCurrent2WeekAverageCycleTimePerPointPromise(requestId, window, target, result) {
 
   let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
   let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
   let projectKey = getProjectKey(target);
 
-  return getCycleTimeCacheUpdatePromise(window, fromStatuses, futureStatuses, projectKey).then(() => {
+  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
 
     let cache = gCycleTimeCache[projectKey].cycleTimes;
     return result.push({
@@ -1165,26 +1373,27 @@ function getCurrent2WeekAverageCycleTimePerPointPromise(window, target, result) 
 
 /**
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {*} target
  * @param {*} result 
  * @returns {Promise}
  */
-function getRolling2WeekAverageCycleTimePerPointPromise(window, target, result) {
+function getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, target, result) {
 
   let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
   let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
   let projectKey = getProjectKey(target);
 
-  return getCycleTimeCacheUpdatePromise(window, fromStatuses, futureStatuses, projectKey).then(() => {
+  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
     let cycleTimes = gCycleTimeCache[projectKey].cycleTimes;
     // Trim the data to start at the beginning of the return window
-    cycleTimes = cycleTimes.filter(value => {return value[1] >= Math.floor(window.from)});
+    let filteredCycleTimes = cycleTimes.filter(value => {return value[1] >= Math.floor(window.from)});
     // If the time frame included a future projection, then add a projection point based on the last velocity calculated
-    padEndToWindow(cycleTimes, window);
+    padEndToWindow(filteredCycleTimes, window);
     // Return a time series object type
     return result.push({
       target: target,
-      datapoints: cycleTimes
+      datapoints: filteredCycleTimes
     });
   });
 }
@@ -1421,12 +1630,19 @@ function getInStringFromStatusArray(statusArray) {
   return updatedArray.join(',');
 }
 
-function getCurrent2WeekVelocityPromise(window, target, result) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
 
   let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
   let projectKey = getProjectKey(target);
 
-  return getVelocityCacheUpdatePromise(window, futureStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
     return result.push({
       target: target,
       datapoints: [gVelocityCache[gVelocityCache.length-1]]
@@ -1437,16 +1653,17 @@ function getCurrent2WeekVelocityPromise(window, target, result) {
 
 /**
  * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
  * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
  * @param {*} result The result
  */
-function getRolling2WeekVelocityPromise(window, target, result) {
+function getRolling2WeekVelocityPromise(requestId, window, target, result) {
 
   let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
   let projectKey = getProjectKey(target);
 
-  return getVelocityCacheUpdatePromise(window, futureStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
     // If the time frame included a future projection, then add a projection point based on the last velocity calculated
     let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
     padEndToWindow(velocities, window);
@@ -1652,7 +1869,7 @@ function getCompletionEvents(statusChangeMap, toStatuses, completionOnly = false
 /**
  * 
  * @param {Object.<string, {issue: Object, statusChanges: {fromStatus: string, toStatus: string, datetime: Date}[]}>} statusChangeMap - dictionary of JIRA issue keys mapped to a datetime ascending ordered array of status changes (including ONLY issues that COMPLETE)
- * @return {number} The average cycle time per point
+ * @return {number} The average cycle time per point - will return NaN if it's effectively infinity (i.e. nothing's moved)
  */
 function calculateAverageCycleTimePerPointForIssues(statusChangeMap, fromStatuses, toStatuses, toDateTime) {
 
@@ -1696,7 +1913,7 @@ function logStatusChangeListForIssues(issues) {
   // Get the full list of status changes for each of these issues (ordered by datetime)
   let statusChangeList = getStatusChangesList(issues);
   statusChangeList.forEach(statusChange => {
-    console.log(statusChange.datetime.toUTCString() + ',' + statusChange.issue.key + ',' + statusChange.fromStatus + ',' + statusChange.toStatus);
+    console.info(statusChange.datetime.toUTCString() + ',' + statusChange.issue.key + ',' + statusChange.fromStatus + ',' + statusChange.toStatus);
   });
 
 }
@@ -1714,6 +1931,15 @@ function getWindowFromRequest(body) {
     intervalMs: body.intervalMs,
     maxDataPoints: body.maxDataPoints
   }
+}
+
+/**
+ * 
+ * @param {*} body 
+ * @return {string} request ID, e.g. Q398
+ */
+function getRequestIDFromRequest(body) {
+  return body.requestId;
 }
 
 /**
@@ -1793,14 +2019,20 @@ gApp.post('/query',
 
     let result = [];
     let window = getWindowFromRequest(httpReq.body);
+    let requestId = getRequestIDFromRequest(httpReq.body);
 
-    let p = httpReq.body.targets.map(target => {
-      return getPromiseForMetric(window, target, result);
+    let p = [];
+    httpReq.body.targets.forEach(target => {
+      let ps = getPromisesForMetric(requestId, window, target, result);
+      if (ps != null) {
+        if (Array.isArray(ps)) {
+          p.push(...ps);
+        } else {
+          p.push(ps);
+        }
+      }
     });
-
-    // Flatten the first level of promise hierarchy (as the getReleasePromise can return multiple promises, one for each release)
-    p = p.flat();
-
+    
     // Once all promises resolve, return result
     Promise.all(p).then(() => {
       httpRes.json(result)
@@ -1810,4 +2042,4 @@ gApp.post('/query',
 
 gApp.listen(3030)
 
-console.log('Server is listening on port 3030')
+console.info('Server is listening on port 3030')
