@@ -616,6 +616,7 @@ function getBurnupProjectionFromCachePromise(requestId, window, target, scopeDat
     let curVScope = doneScopeNow + timeDiffFortnights * vBounds.cur;
     let minVScope = doneScopeNow + timeDiffFortnights * vBounds.min;
     result.push({
+      // target: "Max V (" + vBounds.max.toFixed(0) + ") projection",
       target: "Max V projection",
       datapoints: [
         [doneScopeNow, Math.floor(window.now)],
@@ -623,6 +624,7 @@ function getBurnupProjectionFromCachePromise(requestId, window, target, scopeDat
       ]
     });
     result.push({
+      // target: "Cur V (" + vBounds.cur.toFixed(0) + ") projection",
       target: "Cur V projection",
       datapoints: [
         [doneScopeNow, Math.floor(window.now)],
@@ -630,6 +632,7 @@ function getBurnupProjectionFromCachePromise(requestId, window, target, scopeDat
       ]
     });
     result.push({
+      // target: "Min V (" + vBounds.min.toFixed(0) + ") projection",
       target: "Min V projection",
       datapoints: [
         [doneScopeNow, Math.floor(window.now)],
