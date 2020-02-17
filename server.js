@@ -513,12 +513,12 @@ function writeCacheToDisk(cacheName) {
   if (!fs.existsSync('./caches')){
     fs.mkdirSync('./caches');
   }
-  fs.writeFileSync('caches/' + cacheName + '.json', jsonContent, 'utf8', (err) => {
-    if (err) {
-      console.error("Error occurred writing cache to disk: " + cacheName);
-      return console.log(err);
-    }
-  });
+  try {
+    fs.writeFileSync('caches/' + cacheName + '.json', jsonContent, 'utf8');
+  } catch (err) {
+    console.error("Error occurred writing cache to disk: " + cacheName);
+  }
+  
 }
 
 function readCacheFromDisk(cacheName) {
