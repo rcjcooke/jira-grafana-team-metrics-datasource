@@ -31,7 +31,62 @@ Example: `{"toStatus": "Deployed", "projectKey": "ENG"}`
 | toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
 | projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
 
+### Current 2 week average cycle time per point
 
+Example: `{"toStatus": "Deployed", "fromStatus": "Prioritised", "projectKey": "ENG"}`
+
+| Key | Description | Possible Values | Descriptions |
+| --- | ----------- | --------------- | ------------ |
+| toStatus | When a ticket enters this status, the cycle-time clock stops | Any status in the value stream | The name of the status |
+| fromStatus | When a ticket leaves this status, the cycle-time clock starts | Any status in the value stream | The name of the status |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+
+### Rolling 2 week average cycle time per point
+
+Example: `{"toStatus": "Deployed", "fromStatus": "Prioritised", "projectKey": "ENG"}`
+
+| Key | Description | Possible Values | Descriptions |
+| --- | ----------- | --------------- | ------------ |
+| toStatus | When a ticket enters this status, the cycle-time clock stops | Any status in the value stream | The name of the status |
+| fromStatus | When a ticket leaves this status, the cycle-time clock starts | Any status in the value stream | The name of the status |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+
+### Release Progress
+
+Example: `{"versionIds": [10173, 10166]}`
+
+| Key | Description | Possible Values | Descriptions |
+| --- | ----------- | --------------- | ------------ |
+| versionIds | An array of the JIRA release IDs for the versions to display | Release ID numbers | The numbers |
+
+### Release Projection
+
+Example: 
+
+```
+{
+  "releaseId": 10173, 
+  "toStatus": "Business Acceptance",
+  "projectKey": "ENG",
+  "vSource": "Explicit",
+  "vBounds": {
+    "max": 60,
+    "cur": 40,
+    "min": 30
+  },
+  "releaseDate": "2020/02/28"
+}
+```
+
+| Key | Description | Possible Values | Descriptions |
+| --- | ----------- | --------------- | ------------ |
+| releaseId | The release to calculate the project for | JIRA Release ID number | The number |
+| toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| vSource | The source used for the velocity values | `Explicit` | The velocity bounds to display are specified in config under `vBounds` |
+|         |                                         | `Limits` | The velocity bounds are calculated from the `projectKey` velocity in the timeframe displayed with the minimum, current and maximum velocities in the timeframe used to calculate the bounds of the projection |
+| vBounds | Only required if `vSource` == `Explicit`. Specifies the min, max and current velocities to use for projection. Required 2 weekly velocity figures in story points | `{"max": X, "cur": Y, "min": Z}` | Must be in the specified nested JSON structure. X, Y and Z being velocity values which can be fractional |
+| releaseDate | A planned release date. Used to show a vertical line on the burnup | Any valid date format, e.g. YYYY/MM/DD | The release date |
 
 ## Running on a Raspberry PI
 
