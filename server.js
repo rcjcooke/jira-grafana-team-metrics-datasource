@@ -117,6 +117,25 @@ function init() {
   gApp.use(morgan('combined')); // We want to log all HTTP requests
   gApp.use(passport.initialize());
 
+  // Set up JSON Date parser so that we read dates back in as Dates rather than Strings
+  // See: https://weblog.west-wind.com/posts/2014/jan/06/javascript-json-date-parsing-and-real-dates
+  var reISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*))(?:Z|(\+|-)([\d|:]*))?$/;
+  var reMsAjax = /^\/Date\((d|-|.*)\)[\/|\\]$/;
+
+  JSON.dateParser = function (key, value) {
+    if (typeof value === 'string') {
+        var a = reISO.exec(value);
+        if (a)
+            return new Date(value);
+        a = reMsAjax.exec(value);
+        if (a) {
+            var b = a[1].split(/[-+,.]/);
+            return new Date(b[0] ? +b[0] : 0 - +b[1]);
+        }
+    }
+    return value;
+  };  
+
   // Read the caches in from disk (So we don't go back to JIRA for the entire history of everything. again.)
   readCacheFromDisk("fullIssueArrayCache");
   readCacheFromDisk("fullIssueArrayCacheLastUpdateTime");
@@ -504,18 +523,15 @@ function writeCacheToDisk(cacheName) {
 
 function readCacheFromDisk(cacheName) {
   console.info('Reading in cache ' + cacheName);
-  fs.readFileSync('caches/' + cacheName + '.json', (err, jsonData) => {
-    if (err) {
-      if (err.code != 'ENOENT') {
-        console.error("Error reading cache from disk: " + cacheName);
-        return console.log(err);
-      }
-      return;
-    }
-
+  try {
+    var jsonData = fs.readFileSync('caches/' + cacheName + '.json');
     // Set the global variable holding the cache directly
-    gCaches[cacheName] = JSON.parse(jsonData);
-  });
+    gCaches[cacheName] = JSON.parse(jsonData, JSON.dateParser);
+  } catch (err) {
+    if (err.code != 'ENOENT') {
+      console.error("Error reading cache from disk: " + cacheName);
+    }
+  }
 }
 
 /* ========================== */
