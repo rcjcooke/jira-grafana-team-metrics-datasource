@@ -8,6 +8,7 @@ import AnonymousStrategy from 'passport-anonymous';
 import dateformat from 'dateformat';
 import dotenv from 'dotenv';
 import AsyncLock from 'async-lock';
+import fs from 'fs';
 
 /* ========================== */
 /* CONSTANTS                  */
@@ -66,11 +67,13 @@ let gAuthenticationStrategy = null;
 /* The data caches and related control variables */
 let gCacheManagementLock = new AsyncLock();
 
-let gFullIssueArrayCache = []; // The full and updated array of issues we care about
-let gFullIssueArrayCacheLastUpdateTime = null; // The last time the issue array cache was updated
-
-let gFullEventLogCache = []; // The full event log calculated from the full issue array
-let gFullEventLogCacheLastUpdateTime = null; // The last time the event log cache was updated
+// Cache store
+let gCaches = {
+  fullIssueArrayCache: [],  // The full and updated array of issues we care about
+  fullIssueArrayCacheLastUpdateTime: null, // The last time the issue array cache was updated
+  fullEventLogCache: [], // The full event log calculated from the full issue array
+  fullEventLogCacheLastUpdateTime: null // The last time the event log cache was updated
+};
 
 let gVelocityCache = []; // The cache of velocities ([[velocity, Math.floor(Date)]]) - measured in points per 14 calendar days
 let gVelocityCacheWindow = null; // The window information that applies to the velocities cache
@@ -114,6 +117,13 @@ function init() {
   gApp.use(morgan('combined')); // We want to log all HTTP requests
   gApp.use(passport.initialize());
 
+  // Read the caches in from disk (So we don't go back to JIRA for the entire history of everything. again.)
+  readCacheFromDisk("fullIssueArrayCache");
+  readCacheFromDisk("fullIssueArrayCacheLastUpdateTime");
+
+  readCacheFromDisk("fullEventLogCache");
+  readCacheFromDisk("fullEventLogCacheLastUpdateTime");
+
 }
 
 // Initialise everything
@@ -141,8 +151,8 @@ function getFullIssueArrayCacheUpdatePromise(requestId, window, extraIssues = []
 
 function unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssues = [], startAt = 0) {
   let outOfDate = true;
-  if (gFullIssueArrayCacheLastUpdateTime != null) {
-    outOfDate = window.to > window.now ? window.now > gFullIssueArrayCacheLastUpdateTime : window.to > gFullIssueArrayCacheLastUpdateTime;
+  if (gCaches.fullIssueArrayCacheLastUpdateTime != null) {
+    outOfDate = window.to > window.now ? window.now > gCaches.fullIssueArrayCacheLastUpdateTime : window.to > gCaches.fullIssueArrayCacheLastUpdateTime;
   }
 
   if (outOfDate) {
@@ -150,9 +160,9 @@ function unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssue
     // Get all issues that have reached the target state or later
     var lastUpdateDateTimeJQLString;
     let jql = 'issuetype in (Initiative, Epic, Story, Bug)';
-    if (gFullIssueArrayCacheLastUpdateTime != null) {
+    if (gCaches.fullIssueArrayCacheLastUpdateTime != null) {
       // We've done this before so make sure we only get new information
-      lastUpdateDateTimeJQLString = dateformat(gFullIssueArrayCacheLastUpdateTime, 'yyyy-mm-dd HH:MM');
+      lastUpdateDateTimeJQLString = dateformat(gCaches.fullIssueArrayCacheLastUpdateTime, 'yyyy-mm-dd HH:MM');
       jql = jql + ' AND updatedDate > "' + lastUpdateDateTimeJQLString + '"';
     }
 
@@ -165,9 +175,9 @@ function unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssue
 
       // Update any existing and add any new issues
       let newIssues = jiraRes.issues.filter((issue) => {
-        let cacheIndex = binarySearchIssueIndex(gFullIssueArrayCache, issue.id);
+        let cacheIndex = binarySearchIssueIndex(gCaches.fullIssueArrayCache, issue.id);
         if (cacheIndex != -1) {
-          gFullIssueArrayCache[cacheIndex] = issue;
+          gCaches.fullIssueArrayCache[cacheIndex] = issue;
           return false;
         } else {
           return true;
@@ -183,19 +193,23 @@ function unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssue
       }
 
       if (extraIssues.length > 0) {
-        Array.prototype.push.apply(gFullIssueArrayCache, extraIssues);
+        Array.prototype.push.apply(gCaches.fullIssueArrayCache, extraIssues);
         // Sort by ID number so we can index easily (and so binary search works!)
-        gFullIssueArrayCache.sort((a, b) => {
+        gCaches.fullIssueArrayCache.sort((a, b) => {
           return a.id - b.id;
         });
       }
       // Update the cache last update time
-      gFullIssueArrayCacheLastUpdateTime = window.now;
+      gCaches.fullIssueArrayCacheLastUpdateTime = window.now;
 
-      return gFullIssueArrayCache;
+      // Write the updated cache to disk
+      writeCacheToDisk("fullIssueArrayCache");
+      writeCacheToDisk("fullIssueArrayCacheLastUpdateTime");
+      
+      return gCaches.fullIssueArrayCache;
     });
   } else {
-    return Promise.resolve(gFullIssueArrayCache)
+    return Promise.resolve(gCaches.fullIssueArrayCache)
   }
 }
 
@@ -216,21 +230,26 @@ function getFullEventLogCacheUpdatePromise(requestId, window) {
 function unsafeGetFullEventLogCacheUpdatePromise(requestId, window) {
 
   let outOfDate = true;
-  if (gFullEventLogCacheLastUpdateTime != null) {
-    outOfDate = window.to > window.now ? window.now > gFullEventLogCacheLastUpdateTime : window.to > gFullEventLogCacheLastUpdateTime;
+  if (gCaches.fullEventLogCacheLastUpdateTime != null) {
+    outOfDate = window.to > window.now ? window.now > gCaches.fullEventLogCacheLastUpdateTime : window.to > gCaches.fullEventLogCacheLastUpdateTime;
   }
 
   if (outOfDate) {
     return getFullIssueArrayCacheUpdatePromise(requestId, window).then( (fullIssuesArray) => {
 
       console.info(requestId + ": Executing getFullEventLogCacheUpdatePromise");
-      gFullEventLogCache = calculateFullEventLog(fullIssuesArray);
-      gFullEventLogCacheLastUpdateTime = gFullIssueArrayCacheLastUpdateTime;
+      gCaches.fullEventLogCache = calculateFullEventLog(fullIssuesArray);
+      gCaches.fullEventLogCacheLastUpdateTime = gCaches.fullIssueArrayCacheLastUpdateTime;
 
-      return gFullEventLogCache;
+      
+      // Write updated cache to disk
+      writeCacheToDisk("fullEventLogCache");
+      writeCacheToDisk("fullEventLogCacheLastUpdateTime");
+
+      return gCaches.fullEventLogCache;
     });
   } else {
-    return Promise.resolve(gFullEventLogCache);
+    return Promise.resolve(gCaches.fullEventLogCache);
   }
 }
 
@@ -466,6 +485,32 @@ function unsafeGetScopeAndBurnupCacheUpdatePromise(requestId, window, targetId, 
   } else {
     return Promise.resolve();
   }
+}
+
+function writeCacheToDisk(cacheName) {
+  var jsonContent = JSON.stringify(gCaches[cacheName]);
+  fs.writeFile('caches/' + cacheName + '.json', jsonContent, 'utf8', (err) => {
+    if (err) {
+      console.error("Error occurred writing cache to disk: " + cacheName);
+      return console.log(err);
+    }
+  });
+}
+
+function readCacheFromDisk(cacheName) {
+  console.info('Reading in cache %s', cacheName);
+  fs.readFile('caches/' + cacheName + '.json', (err, jsonData) => {
+    if (err) {
+      if (err.code != 'ENOENT') {
+        console.error("Error reading cache from disk: " + cacheName);
+        return console.log(err);
+      }
+      return;
+    }
+
+    // Set the global variable holding the cache directly
+    gCaches[cacheName] = JSON.parse(jsonData);
+  });
 }
 
 /* ========================== */
