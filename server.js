@@ -489,7 +489,12 @@ function unsafeGetScopeAndBurnupCacheUpdatePromise(requestId, window, targetId, 
 
 function writeCacheToDisk(cacheName) {
   var jsonContent = JSON.stringify(gCaches[cacheName]);
-  fs.writeFile('caches/' + cacheName + '.json', jsonContent, 'utf8', (err) => {
+
+  // Make the caches directory if it doesn't exist already
+  if (!fs.existsSync('./caches')){
+    fs.mkdirSync('./caches');
+  }
+  fs.writeFileSync('caches/' + cacheName + '.json', jsonContent, 'utf8', (err) => {
     if (err) {
       console.error("Error occurred writing cache to disk: " + cacheName);
       return console.log(err);
@@ -498,8 +503,8 @@ function writeCacheToDisk(cacheName) {
 }
 
 function readCacheFromDisk(cacheName) {
-  console.info('Reading in cache %s', cacheName);
-  fs.readFile('caches/' + cacheName + '.json', (err, jsonData) => {
+  console.info('Reading in cache ' + cacheName);
+  fs.readFileSync('caches/' + cacheName + '.json', (err, jsonData) => {
     if (err) {
       if (err.code != 'ENOENT') {
         console.error("Error reading cache from disk: " + cacheName);
