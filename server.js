@@ -517,8 +517,9 @@ function writeCacheToDisk(cacheName) {
     fs.writeFileSync('caches/' + cacheName + '.json', jsonContent, 'utf8');
   } catch (err) {
     console.error("Error occurred writing cache to disk: " + cacheName);
+    console.error(err);
   }
-  
+
 }
 
 function readCacheFromDisk(cacheName) {
@@ -530,6 +531,7 @@ function readCacheFromDisk(cacheName) {
   } catch (err) {
     if (err.code != 'ENOENT') {
       console.error("Error reading cache from disk: " + cacheName);
+      console.error(err);
     }
   }
 }
