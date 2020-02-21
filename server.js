@@ -27,12 +27,14 @@ const METRICS = [
   'Tickets finished in the last week',
   'High visibility tickets',
   'Initiative Release Projection',
-  'Release Projection'
+  'Release Projection',
+  'Release Epics'
 ];
 const STATUSES = [
   'Backlog',
   'Prioritised',
   'Test Analysis',
+  'Design',
   'Dev',
   'In Review',
   'Dev Review',
@@ -42,8 +44,8 @@ const STATUSES = [
   'Deploy Queue',
   'Deploy',
   'Deployed',
-  'Not Doing',
   'Done',
+  'Not Doing'
 ];
 
 /* ========================== */
@@ -537,7 +539,7 @@ function readCacheFromDisk(cacheName) {
 }
 
 /* ========================== */
-/* CALCS                      */
+/* PROMISES                   */
 /* ========================== */
 
 /**
@@ -559,6 +561,7 @@ function getPromisesForMetric(requestId, window, target, result) {
     case METRICS[8]: return getHighVizTicketsPromise(requestId, target, result);
     case METRICS[9]: return getInitiativeProjectionPromise(requestId, window, target, result);
     case METRICS[10]: return getReleaseProjectionPromise(requestId, window, target, result);
+    case METRICS[11]: return getReleaseEpicsPromise(requestId, window, target, result);
   }
 }
 
@@ -730,16 +733,6 @@ function getBurnupProjectionFromCachePromise(requestId, window, target, scopeDat
   });
 }
 
-function addVerticalLine(datetime, targetName, maxVerticalPoint, result) {
-  result.push({
-    target: targetName,
-    datapoints: [
-      [0, Math.floor(datetime)],
-      [maxVerticalPoint, Math.floor(datetime)]
-    ]
-  });
-}
-
 /**
  * Calculates a release scope, burnup and projection dataset for an initiative
  * 
@@ -759,6 +752,576 @@ function getInitiativeProjectionPromise(requestId, window, target, result) {
     return addBurnupProjectionFromCache(window, target, gInitiativeScopeAndBurnupDataCache[initiativeId], result);
 
   }); // getScopeAndBurnupCacheUpdatePromise.then
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getHighVizTicketsPromise(requestId, target, result) {
+
+  let jql = 'project = "ENG" AND labels = high-viz';
+
+  return gJira.search.search({ jql: jql }).then((jiraRes) => {
+
+    let tableRows = [];
+    jiraRes.issues.forEach( issue => {
+      tableRows.push([
+        issue.key,
+        issue.fields.summary,
+        issue.fields.status.name + ' ' + issue.fields.customfield_10059.value
+      ])
+    });
+    
+    // Only returns a table type (not timeserie)
+    return result.push({
+      target: target,
+      columns: [
+        {text: "Key", type: "string"},
+        {text: "Title", type: "string"},
+        {text: "Status", type: "string"}
+      ],
+      rows: tableRows,
+      type: "table"
+    });
+
+  });
+
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getNewTicketsStartedLastWeekPromise(requestId, target, result) {
+
+  let jql = ('project = "ENG" AND status changed from ("Prioritised") after -1w and status not in ("Backlog")');
+  return getTicketsTableFromJQLPromise(target, result, jql);
+
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getTicketsFinishedLastWeekPromise(requestId, target, result) {
+
+  let jql = ('project = "ENG" AND status changed to ("Deploy Queue", Deploy, Deployed) after -1w and status in ("Deploy Queue", Deploy, Deployed)');
+  return getTicketsTableFromJQLPromise(target, result, jql);
+
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getAcceptanceCriteriaConformancePromise(requestId, target, result) {
+  // customfield_10060 = acceptance critera field
+
+  let jql = ('project = "ENG" AND labels = high-viz');
+
+  return gJira.search.search({ jql: jql }).then((jiraRes) => {
+    
+    let numStories = jiraRes.issues.length;
+    let numACs = 0;
+    jiraRes.issues.forEach( issue => {
+      if (issue.fields.customfield_10060 != null) numACs++;
+    });
+
+    // 'timeserie'
+    return result.push({
+      target: target,
+      datapoints: [[numACs/numStories*100, Math.floor(new Date())]]
+    });
+
+  });
+
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target 
+ * @param {*} result 
+ * @return an array of Promises, one for each version ID
+ */
+function getReleaseProgressPromises(requestId, window, target, result) {
+  let versionIds = getVersionIds(target);
+  let p = [];
+  versionIds.forEach(versionId => {
+    p.push(getReleaseProgressPromise(requestId, window, result, versionId));
+  });
+  return p;
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} result 
+ * @param {*} versionId 
+ */
+function getReleaseProgressPromise(requestId, window, result, versionId) {
+
+  let releaseName = "";
+
+  let p = [];
+  p.push(getScopeAndBurnupCacheUpdatePromise(requestId, window, versionId, true));
+  p.push(gJira.version.getVersion({versionId: versionId}).then((jiraRes) => {
+    releaseName = jiraRes.name;
+  }));
+
+  // Wait for the scope and burnup caches to be updated AND for the version information to update
+  return Promise.all(p).then(() => {
+
+    let cache = gReleaseScopeAndBurnupDataCache[versionId];
+    let done = cache.burnupData[cache.burnupData.length-1][0];
+    let scope = cache.scopeData[cache.scopeData.length-1][0];
+    
+    let completePct = 0;
+    if (scope != 0) {
+      completePct = done / scope * 100;
+    }
+
+    return result.push({
+      target: releaseName,
+      datapoints: [[completePct, Math.floor(cache.lastUpdateTime)]]
+    });
+
+  });
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getCurrent2WeekAverageCycleTimePerPointPromise(requestId, window, target, result) {
+
+  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
+  let projectKey = getProjectKey(target);
+
+  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
+
+    let cache = gCycleTimeCache[projectKey].cycleTimes;
+    return result.push({
+      target: target,
+      datapoints: [cache[cache.length-1]]
+    });
+  });
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} target
+ * @param {*} result 
+ * @returns {Promise}
+ */
+function getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, target, result) {
+
+  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
+  let projectKey = getProjectKey(target);
+
+  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
+    let cycleTimes = gCycleTimeCache[projectKey].cycleTimes;
+    // Trim the data to start at the beginning of the return window
+    let filteredCycleTimes = cycleTimes.filter(value => {return value[1] >= Math.floor(window.from)});
+    // If the time frame included a future projection, then add a projection point based on the last velocity calculated
+    padEndToWindow(filteredCycleTimes, window);
+    // Return a time series object type
+    return result.push({
+      target: target,
+      datapoints: filteredCycleTimes
+    });
+  });
+}
+
+/**
+ * Pads out the dataPoints array to include a first point at the beginning of the window. This will be the same as the first value.
+ * 
+ * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
+ */
+function padStartToWindow(dataPoints, window) {
+
+  if (dataPoints[0][1] != Math.floor(window.from)) {
+    dataPoints.unshift([dataPoints[0][0], Math.floor(window.from)])
+  }
+
+}
+
+/**
+ * Pads out the dataPoints array to include a last point at the end. This will be the same as the last value.
+ * 
+ * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
+ */
+function padEndToWindow(dataPoints, window) {
+
+  if (dataPoints[dataPoints.length-1][1] != Math.floor(window.to)) {
+    dataPoints.push([dataPoints[dataPoints.length-1][0], Math.floor(window.to)])
+  }
+
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {string} the target status, e.g. 'Deploy Queue'
+ */
+function getToStatus(target) {
+  // Default status is Deploy Queue
+  let toStatus = STATUSES[STATUSES.length-1];
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('toStatus')) {
+        toStatus = target.data.toStatus;
+      }
+    }
+  }
+  return toStatus;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {string} the target status, e.g. 'Dev'
+ */
+function getFromStatus(target) {
+  let fromStatus = STATUSES[0];
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('fromStatus')) {
+        fromStatus = target.data.fromStatus;
+      }
+    }
+  }
+  return fromStatus;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {string} the target project key (e.g. 'ENG')
+ */
+function getProjectKey(target) {
+  let projectKey = null;
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('projectKey')) {
+        projectKey = target.data.projectKey;
+      }
+    }
+  }
+  return projectKey;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {string} The velocity source, either "Explicit" or "Limits" only at the moment
+ */
+function getVelocitySource(target) {
+  let vSource = "Limits";
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('vSource')) {
+        vSource = target.data.vSource;
+      }
+    }
+  }
+  return vSource;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {{max: number, cur: number, min: number}} a object containing the bounds of the velocity
+ */
+function getVelocityBounds(target) {
+  let vBounds = {max: 0, cur: 0, min: 0};
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('vBounds')) {
+        vBounds = target.data.vBounds;
+      }
+    }
+  }
+  return vBounds;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {Date} The release date
+ */
+function getTargetReleaseDate(target) {
+  let releaseDate = new Date();
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('releaseDate')) {
+        releaseDate = new Date(target.data.releaseDate);
+      }
+    }
+  }
+  return releaseDate;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {string} the target initiative ID, e.g. 12345
+ */
+function getInitiativeId(target) {
+  // Default project key is null (which means all projects)
+  let initiativeId = null;
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('initiativeId')) {
+        initiativeId = target.data.initiativeId;
+      }
+    }
+  }
+  return initiativeId;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {string} the target release ID, e.g. 12345
+ */
+function getReleaseId(target) {
+  // Default project key is null (which means all projects)
+  let releaseId = null;
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('releaseId')) {
+        releaseId = target.data.releaseId;
+      }
+    }
+  }
+  return releaseId;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {number} an array of target version IDs
+ */
+function getVersionIds(target) {
+  // Default status is Deploy Queue
+  let versionIds = [];
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('versionIds')) {
+        versionIds = target.data.versionIds;
+      }
+    }
+  }
+  return versionIds;
+}
+
+/**
+ * 
+ * @param {string} toStatus The status to start from
+ * @return {string[]} an array of statuses starting with toStatus
+ */
+function getFutureStatusesFromStartingStatus(toStatus) {
+  // Statuses are in value stream order, so get every status after the one we want
+  let futureStatuses = [toStatus];
+  let gotIt = false;
+  STATUSES.forEach(status => {
+    if (gotIt) {
+      futureStatuses.push(status);
+    } else if (status == toStatus) {
+      gotIt = true;
+    }
+  });
+  return futureStatuses;
+}
+
+/**
+ * 
+ * @param {string} endStatus The status to finish on
+ * @return {string[]} an ordered array of statuses starting before endStatus
+ */
+function getPreviousStatusesFromStartingStatus(endStatus) {
+  // Statuses are in value stream order, so get every status before the one we want
+  let previousStatuses = [];
+  let gotIt = false;
+  STATUSES.forEach(status => {
+    if (!gotIt) {
+      previousStatuses.push(status);
+    }
+    if (status == endStatus) {
+      gotIt = true;
+    }
+  });
+  return previousStatuses;
+}
+
+function getInStringFromStatusArray(statusArray) {
+  let updatedArray = [];
+  statusArray.forEach(status => {
+    updatedArray.push('"' + status + '"');
+  });
+  return updatedArray.join(',');
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} target 
+ * @param {*} result 
+ */
+function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
+
+  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let projectKey = getProjectKey(target);
+
+  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+    return result.push({
+      target: target,
+      datapoints: [gVelocityCache[gVelocityCache.length-1]]
+    });
+  });
+
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
+ * @param {*} result The result
+ */
+function getRolling2WeekVelocityPromise(requestId, window, target, result) {
+
+  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let projectKey = getProjectKey(target);
+
+  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+    // If the time frame included a future projection, then add a projection point based on the last velocity calculated
+    let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
+    padEndToWindow(velocities, window);
+    // Return a time series object type
+    return result.push({
+      target: target,
+      datapoints: velocities
+    });
+  });
+
+}
+
+/**
+ * Create a Grafana table of tickets from a JIRA JQL Query
+ * 
+ * @param {*} target The target object from Grafana defining the query data requirement
+ * @param {*[]} result The result array object to aggregate results to
+ * @param {string} jql The JQL QUery string that gets the tickets required in the table
+ * @return {Promise} The Promise that will return the table
+ */
+function getTicketsTableFromJQLPromise(target, result, jql) {
+
+  return gJira.search.search({ jql: jql }).then((jiraRes) => {
+
+    let tableRows = [];
+    jiraRes.issues.forEach(issue => {
+      // customfield_10008 = Epic Link
+      tableRows.push([issue.key, issue.fields.summary, issue.fields.customfield_10008]);
+    });
+
+    // Only returns a table type (not timeserie)
+    return result.push({
+      target: target,
+      columns: [
+        {text: "Key", type: "string"},
+        {text: "Title", type: "string"},
+        {text: "Epic Key", type: "string"}
+      ],
+      rows: tableRows,
+      type: "table"
+    });
+
+  });
+
+}
+
+/**
+ * Performs a binary search on the provided sorted list and returns the index of the item if found. If it can't be found it'll return -1.
+ * Note: Taken from https://github.com/Olical/binary-search/blob/master/src/binarySearch.js
+ * 
+ * @param {*[]} issueList Items to search through.
+ * @param {*} item The item to look for.
+ * @param exactOnly if false, then this will return index of the closest item if the item isn't found, rather than -1
+ * @return {Number} The index of the item if found, -1 if not.
+ */
+function binarySearchIssueIndex(issueList, id, exactOnly = true) {
+  var min = 0;
+  var max = issueList.length - 1;
+  var guess;
+
+  var bitwise = (max <= 2147483647) ? true : false;
+  if (bitwise) {
+    while (min <= max) {
+      guess = (min + max) >> 1;
+      if (issueList[guess].id === id) { return guess; }
+      else {
+        if (issueList[guess].id < id) { min = guess + 1; }
+        else { max = guess - 1; }
+      }
+    }
+  } else {
+    while (min <= max) {
+      guess = Math.floor((min + max) / 2);
+      if (issueList[guess].id === id) { return guess; }
+      else {
+        if (issueList[guess].id < id) { min = guess + 1; }
+        else { max = guess - 1; }
+      }
+    }
+  }
+  return exactOnly ? -1 : guess;
+}
+
+/**
+ * Retrieves the list of Epics that are in or have children in the specified release.
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
+ * @param {*} result The result
+ */
+function getReleaseEpicsPromise(requestId, window, target, result) {
+
+}
+
+/* ========================== */
+/* CALCS / UTILITIES          */
+/* ========================== */
+
+function addVerticalLine(datetime, targetName, maxVerticalPoint, result) {
+  result.push({
+    target: targetName,
+    datapoints: [
+      [0, Math.floor(datetime)],
+      [maxVerticalPoint, Math.floor(datetime)]
+    ]
+  });
 }
 
 /**
@@ -1275,513 +1838,6 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
 }
 
 /**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} target 
- * @param {*} result 
- */
-function getHighVizTicketsPromise(requestId, target, result) {
-
-  let jql = 'project = "ENG" AND labels = high-viz';
-
-  return gJira.search.search({ jql: jql }).then((jiraRes) => {
-
-    let tableRows = [];
-    jiraRes.issues.forEach( issue => {
-      tableRows.push([
-        issue.key,
-        issue.fields.summary,
-        issue.fields.status.name + ' ' + issue.fields.customfield_10059.value
-      ])
-    });
-    
-    // Only returns a table type (not timeserie)
-    return result.push({
-      target: target,
-      columns: [
-        {text: "Key", type: "string"},
-        {text: "Title", type: "string"},
-        {text: "Status", type: "string"}
-      ],
-      rows: tableRows,
-      type: "table"
-    });
-
-  });
-
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} target 
- * @param {*} result 
- */
-function getNewTicketsStartedLastWeekPromise(requestId, target, result) {
-
-  let jql = ('project = "ENG" AND status changed from ("Prioritised") after -1w and status not in ("Backlog")');
-  return getTicketsTableFromJQLPromise(target, result, jql);
-
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} target 
- * @param {*} result 
- */
-function getTicketsFinishedLastWeekPromise(requestId, target, result) {
-
-  let jql = ('project = "ENG" AND status changed to ("Deploy Queue", Deploy, Deployed) after -1w and status in ("Deploy Queue", Deploy, Deployed)');
-  return getTicketsTableFromJQLPromise(target, result, jql);
-
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} target 
- * @param {*} result 
- */
-function getAcceptanceCriteriaConformancePromise(requestId, target, result) {
-  // customfield_10060 = acceptance critera field
-
-  let jql = ('project = "ENG" AND labels = high-viz');
-
-  return gJira.search.search({ jql: jql }).then((jiraRes) => {
-    
-    let numStories = jiraRes.issues.length;
-    let numACs = 0;
-    jiraRes.issues.forEach( issue => {
-      if (issue.fields.customfield_10060 != null) numACs++;
-    });
-
-    // 'timeserie'
-    return result.push({
-      target: target,
-      datapoints: [[numACs/numStories*100, Math.floor(new Date())]]
-    });
-
-  });
-
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} target 
- * @param {*} result 
- * @return an array of Promises, one for each version ID
- */
-function getReleaseProgressPromises(requestId, window, target, result) {
-  let versionIds = getVersionIds(target);
-  let p = [];
-  versionIds.forEach(versionId => {
-    p.push(getReleaseProgressPromise(requestId, window, result, versionId));
-  });
-  return p;
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} window 
- * @param {*} result 
- * @param {*} versionId 
- */
-function getReleaseProgressPromise(requestId, window, result, versionId) {
-
-  let releaseName = "";
-
-  let p = [];
-  p.push(getScopeAndBurnupCacheUpdatePromise(requestId, window, versionId, true));
-  p.push(gJira.version.getVersion({versionId: versionId}).then((jiraRes) => {
-    releaseName = jiraRes.name;
-  }));
-
-  // Wait for the scope and burnup caches to be updated AND for the version information to update
-  return Promise.all(p).then(() => {
-
-    let cache = gReleaseScopeAndBurnupDataCache[versionId];
-    let done = cache.burnupData[cache.burnupData.length-1][0];
-    let scope = cache.scopeData[cache.scopeData.length-1][0];
-    
-    let completePct = 0;
-    if (scope != 0) {
-      completePct = done / scope * 100;
-    }
-
-    return result.push({
-      target: releaseName,
-      datapoints: [[completePct, Math.floor(cache.lastUpdateTime)]]
-    });
-
-  });
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} window 
- * @param {*} target 
- * @param {*} result 
- */
-function getCurrent2WeekAverageCycleTimePerPointPromise(requestId, window, target, result) {
-
-  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
-  let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
-  let projectKey = getProjectKey(target);
-
-  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
-
-    let cache = gCycleTimeCache[projectKey].cycleTimes;
-    return result.push({
-      target: target,
-      datapoints: [cache[cache.length-1]]
-    });
-  });
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} target
- * @param {*} result 
- * @returns {Promise}
- */
-function getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, target, result) {
-
-  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
-  let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
-  let projectKey = getProjectKey(target);
-
-  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
-    let cycleTimes = gCycleTimeCache[projectKey].cycleTimes;
-    // Trim the data to start at the beginning of the return window
-    let filteredCycleTimes = cycleTimes.filter(value => {return value[1] >= Math.floor(window.from)});
-    // If the time frame included a future projection, then add a projection point based on the last velocity calculated
-    padEndToWindow(filteredCycleTimes, window);
-    // Return a time series object type
-    return result.push({
-      target: target,
-      datapoints: filteredCycleTimes
-    });
-  });
-}
-
-/**
- * Pads out the dataPoints array to include a first point at the beginning of the window. This will be the same as the first value.
- * 
- * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
- */
-function padStartToWindow(dataPoints, window) {
-
-  if (dataPoints[0][1] != Math.floor(window.from)) {
-    dataPoints.unshift([dataPoints[0][0], Math.floor(window.from)])
-  }
-
-}
-
-/**
- * Pads out the dataPoints array to include a last point at the end. This will be the same as the last value.
- * 
- * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
- */
-function padEndToWindow(dataPoints, window) {
-
-  if (dataPoints[dataPoints.length-1][1] != Math.floor(window.to)) {
-    dataPoints.push([dataPoints[dataPoints.length-1][0], Math.floor(window.to)])
-  }
-
-}
-
-/**
- * 
- * @param {*} target 
- * @return {string} the target status, e.g. 'Deploy Queue'
- */
-function getToStatus(target) {
-  // Default status is Deploy Queue
-  let toStatus = STATUSES[STATUSES.length-1];
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('toStatus')) {
-        toStatus = target.data.toStatus;
-      }
-    }
-  }
-  return toStatus;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {string} the target status, e.g. 'Dev'
- */
-function getFromStatus(target) {
-  let fromStatus = STATUSES[0];
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('fromStatus')) {
-        fromStatus = target.data.fromStatus;
-      }
-    }
-  }
-  return fromStatus;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {string} the target project key (e.g. 'ENG')
- */
-function getProjectKey(target) {
-  let projectKey = null;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('projectKey')) {
-        projectKey = target.data.projectKey;
-      }
-    }
-  }
-  return projectKey;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {string} The velocity source, either "Explicit" or "Limits" only at the moment
- */
-function getVelocitySource(target) {
-  let vSource = "Limits";
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('vSource')) {
-        vSource = target.data.vSource;
-      }
-    }
-  }
-  return vSource;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {{max: number, cur: number, min: number}} a object containing the bounds of the velocity
- */
-function getVelocityBounds(target) {
-  let vBounds = {max: 0, cur: 0, min: 0};
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('vBounds')) {
-        vBounds = target.data.vBounds;
-      }
-    }
-  }
-  return vBounds;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {Date} The release date
- */
-function getTargetReleaseDate(target) {
-  let releaseDate = new Date();
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('releaseDate')) {
-        releaseDate = new Date(target.data.releaseDate);
-      }
-    }
-  }
-  return releaseDate;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {string} the target initiative ID, e.g. 12345
- */
-function getInitiativeId(target) {
-  // Default project key is null (which means all projects)
-  let initiativeId = null;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('initiativeId')) {
-        initiativeId = target.data.initiativeId;
-      }
-    }
-  }
-  return initiativeId;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {string} the target release ID, e.g. 12345
- */
-function getReleaseId(target) {
-  // Default project key is null (which means all projects)
-  let releaseId = null;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('releaseId')) {
-        releaseId = target.data.releaseId;
-      }
-    }
-  }
-  return releaseId;
-}
-
-/**
- * 
- * @param {*} target 
- * @return {number} an array of target version IDs
- */
-function getVersionIds(target) {
-  // Default status is Deploy Queue
-  let versionIds = [];
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('versionIds')) {
-        versionIds = target.data.versionIds;
-      }
-    }
-  }
-  return versionIds;
-}
-
-/**
- * 
- * @param {string} toStatus The status to start from
- * @return {string[]} an array of statuses starting with toStatus
- */
-function getFutureStatusesFromStartingStatus(toStatus) {
-  // Statuses are in value stream order, so get every status after the one we want
-  let futureStatuses = [toStatus];
-  let gotIt = false;
-  STATUSES.forEach(status => {
-    if (gotIt) {
-      futureStatuses.push(status);
-    } else if (status == toStatus) {
-      gotIt = true;
-    }
-  });
-  return futureStatuses;
-}
-
-/**
- * 
- * @param {string} endStatus The status to finish on
- * @return {string[]} an ordered array of statuses starting before endStatus
- */
-function getPreviousStatusesFromStartingStatus(endStatus) {
-  // Statuses are in value stream order, so get every status before the one we want
-  let previousStatuses = [];
-  let gotIt = false;
-  STATUSES.forEach(status => {
-    if (!gotIt) {
-      previousStatuses.push(status);
-    }
-    if (status == endStatus) {
-      gotIt = true;
-    }
-  });
-  return previousStatuses;
-}
-
-function getInStringFromStatusArray(statusArray) {
-  let updatedArray = [];
-  statusArray.forEach(status => {
-    updatedArray.push('"' + status + '"');
-  });
-  return updatedArray.join(',');
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} window 
- * @param {*} target 
- * @param {*} result 
- */
-function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
-
-  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
-  let projectKey = getProjectKey(target);
-
-  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
-    return result.push({
-      target: target,
-      datapoints: [gVelocityCache[gVelocityCache.length-1]]
-    });
-  });
-
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
- * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
- * @param {*} result The result
- */
-function getRolling2WeekVelocityPromise(requestId, window, target, result) {
-
-  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
-  let projectKey = getProjectKey(target);
-
-  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
-    // If the time frame included a future projection, then add a projection point based on the last velocity calculated
-    let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
-    padEndToWindow(velocities, window);
-    // Return a time series object type
-    return result.push({
-      target: target,
-      datapoints: velocities
-    });
-  });
-
-}
-
-/**
- * Create a Grafana table of tickets from a JIRA JQL Query
- * 
- * @param {*} target The target object from Grafana defining the query data requirement
- * @param {*[]} result The result array object to aggregate results to
- * @param {string} jql The JQL QUery string that gets the tickets required in the table
- * @return {Promise} The Promise that will return the table
- */
-function getTicketsTableFromJQLPromise(target, result, jql) {
-
-  return gJira.search.search({ jql: jql }).then((jiraRes) => {
-
-    let tableRows = [];
-    jiraRes.issues.forEach(issue => {
-      // customfield_10008 = Epic Link
-      tableRows.push([issue.key, issue.fields.summary, issue.fields.customfield_10008]);
-    });
-
-    // Only returns a table type (not timeserie)
-    return result.push({
-      target: target,
-      columns: [
-        {text: "Key", type: "string"},
-        {text: "Title", type: "string"},
-        {text: "Epic Key", type: "string"}
-      ],
-      rows: tableRows,
-      type: "table"
-    });
-
-  });
-
-}
-
-/**
  * Note: customfield_10016 = Story Points
  * 
  * @param {Object} issue - JIRA issue object
@@ -2011,43 +2067,6 @@ function getWindowFromRequest(body) {
  */
 function getRequestIDFromRequest(body) {
   return body.requestId;
-}
-
-/**
- * Performs a binary search on the provided sorted list and returns the index of the item if found. If it can't be found it'll return -1.
- * Note: Taken from https://github.com/Olical/binary-search/blob/master/src/binarySearch.js
- * 
- * @param {*[]} issueList Items to search through.
- * @param {*} item The item to look for.
- * @param exactOnly if false, then this will return index of the closest item if the item isn't found, rather than -1
- * @return {Number} The index of the item if found, -1 if not.
- */
-function binarySearchIssueIndex(issueList, id, exactOnly = true) {
-  var min = 0;
-  var max = issueList.length - 1;
-  var guess;
-
-  var bitwise = (max <= 2147483647) ? true : false;
-  if (bitwise) {
-    while (min <= max) {
-      guess = (min + max) >> 1;
-      if (issueList[guess].id === id) { return guess; }
-      else {
-        if (issueList[guess].id < id) { min = guess + 1; }
-        else { max = guess - 1; }
-      }
-    }
-  } else {
-    while (min <= max) {
-      guess = Math.floor((min + max) / 2);
-      if (issueList[guess].id === id) { return guess; }
-      else {
-        if (issueList[guess].id < id) { min = guess + 1; }
-        else { max = guess - 1; }
-      }
-    }
-  }
-  return exactOnly ? -1 : guess;
 }
 
 /* ========================== */
