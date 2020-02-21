@@ -9,7 +9,6 @@ import dateformat from 'dateformat';
 import dotenv from 'dotenv';
 import AsyncLock from 'async-lock';
 import fs from 'fs';
-import { version } from 'punycode';
 
 /* ========================== */
 /* CONSTANTS                  */
