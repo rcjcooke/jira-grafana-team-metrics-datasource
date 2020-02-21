@@ -9,6 +9,7 @@ import dateformat from 'dateformat';
 import dotenv from 'dotenv';
 import AsyncLock from 'async-lock';
 import fs from 'fs';
+import { version } from 'punycode';
 
 /* ========================== */
 /* CONSTANTS                  */
@@ -1117,6 +1118,7 @@ function getReleaseId(target) {
 }
 
 /**
+ * Get versionIDs from the "target"
  * 
  * @param {*} target 
  * @return {number} an array of target version IDs
@@ -1305,8 +1307,78 @@ function binarySearchIssueIndex(issueList, id, exactOnly = true) {
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
  * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
  * @param {*} result The result
+ * @param {string} epicKeys The keys of the Epics we want to include (gets populated by the early runs of this method)
+ * @param {number} startAt The result number to start at (for handling paginated responses)
  */
-function getReleaseEpicsPromise(requestId, window, target, result) {
+function getReleaseEpicsPromise(requestId, window, target, result, epicKeys = [], startAt = 0) {
+
+  let versionIDs = getVersionIds(target);
+  if (versionIDs.length == 0) return Promise.resolve(result);
+
+  let jql = 'fixVersion IN (' + versionIDs.join(',') + ')';
+
+  return gJira.search.search({ jql: jql, startAt: startAt}).then((jiraRes) => {
+
+    let totalResults = jiraRes.total;
+    let maxResults = jiraRes.maxResults;
+
+    console.info(requestId + ": Executing getReleaseEpicsPromise (maxResults=" + totalResults + ", startAt=" + startAt + ")");
+
+    jiraRes.issues.forEach((issue) => {
+      if (issue.fields.issuetype.name == "Epic") {
+        epicKeys.push(issue.key);
+      } else if (issue.fields.issuetype.name == "Story") {
+        if (issue.fields.customfield_10008) {
+          epicKeys.push(issue.fields.customfield_10008);
+        }
+      }
+    });
+
+    // If we haven't got all the results yet then keep building the array
+    if (startAt + maxResults < totalResults) {
+      return getReleaseEpicsPromise(requestId, window, target, result, epicKeys, startAt + maxResults);
+    }
+
+    // Got all the Epic Keys, now we need to get their details
+    return populateReleaseEpics(requestId, window, target, result, epicKeys);
+  });
+}
+
+function populateReleaseEpics(requestId, window, target, result, epicKeys, tableRows = [], startAt = 0) {
+
+  let jql = 'key IN (' + epicKeys.join(',') + ')';
+
+  return gJira.search.search({jql: jql, startAt: startAt}).then((jiraRes) => {
+
+    let totalResults = jiraRes.total;
+    let maxResults = jiraRes.maxResults;
+
+    console.info(requestId + ": Executing populateReleaseEpics (maxResults=" + totalResults + ", startAt=" + startAt + ")");
+
+    jiraRes.issues.forEach(issue => {
+      tableRows.push([
+        issue.key,
+        issue.fields.summary
+      ])
+    });
+    
+    // If we haven't got all the results yet then keep building the array
+    if (startAt + maxResults < totalResults) {
+      return getReleaseEpicsPromise(requestId, window, target, result, epicKeys, tableRows, startAt + maxResults);
+    }
+
+    // Only returns a table type (not timeseries)
+    return result.push({
+      target: target,
+      columns: [
+        {text: "Key", type: "string"},
+        {text: "Title", type: "string"}
+      ],
+      rows: tableRows,
+      type: "table"
+    });
+
+  });
 
 }
 
