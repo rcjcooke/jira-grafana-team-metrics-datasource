@@ -1314,7 +1314,7 @@ function getReleaseEpicsPromise(requestId, window, target, result, epicKeys = []
   let versionIDs = getVersionIds(target);
   if (versionIDs.length == 0) return Promise.resolve(result);
 
-  let jql = 'fixVersion IN (' + versionIDs.join(',') + ')';
+  let jql = 'fixVersion IN (' + versionIDs.join(',') + ') AND issuetype IN (Story, Bug)';
 
   return gJira.search.search({ jql: jql, startAt: startAt}).then((jiraRes) => {
 
@@ -1363,7 +1363,7 @@ function populateReleaseEpics(requestId, window, target, result, epicKeys, table
     
     // If we haven't got all the results yet then keep building the array
     if (startAt + maxResults < totalResults) {
-      return getReleaseEpicsPromise(requestId, window, target, result, epicKeys, tableRows, startAt + maxResults);
+      return populateReleaseEpics(requestId, window, target, result, epicKeys, tableRows, startAt + maxResults);
     }
 
     // Only returns a table type (not timeseries)
