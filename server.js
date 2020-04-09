@@ -28,7 +28,8 @@ const METRICS = [
   'High visibility tickets',
   'Initiative Release Projection',
   'Release Projection',
-  'Release Epics'
+  'Release Epics',
+  'Defect raise rate'
 ];
 const STATUSES = [
   'Backlog',
@@ -45,6 +46,9 @@ const STATUSES = [
   'Deploy',
   'Deployed',
   'Done',
+  'Not Doing'
+];
+const CANCELLED_STATUSES = [
   'Not Doing'
 ];
 
@@ -364,6 +368,96 @@ function unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, 
   }
 }
 
+function getDefectRaiseRateCacheUpdatePromise(requestId, window, futureStatuses, projectKey) {
+  return gCacheManagementLock.acquire("defectRaiseRateCache", () => {
+    return unsafeGetDefectRaiseRateCacheUpdatePromise(requestId, window, futureStatuses, projectKey);
+  }).then( (result) => {
+    // lock released
+    return result;
+  });
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {*} futureStatuses 
+ * @param {*} projectKey 
+ */
+function unsafeGetDefectRaiseRateCacheUpdatePromise(requestId, window, futureStatuses, projectKey) {
+
+  // if (gVelocityCacheWindow == null || window.to > gVelocityCacheWindow.to || window.intervalMs != gVelocityCacheWindow.intervalMs || futureStatuses != gVelocityCacheFutureStatuses || gVelocityCacheProjectKey != projectKey) {
+  //   return getFullIssueArrayCacheUpdatePromise(requestId, window).then((fullIssuesArray) => {
+
+  //     console.info(requestId + ": Executing getVelocityCacheUpdatePromise (projectKey=" + projectKey + ")");
+
+  //     // Filter out Epics and Initiatives
+  //     let filteredIssueArray = fullIssuesArray.filter((issue) => {
+  //       return issue.fields.issuetype.name != "Initiative" && issue.fields.issuetype.name != "Epic";
+  //     });
+  //     // If we're only interested in a specific project (which is likely) then filter it down further
+  //     if (projectKey != null) {
+  //       filteredIssueArray = filteredIssueArray.filter((issue) => {
+  //         return issue.fields.project.key == projectKey;
+  //       });
+  //     }
+
+  //     // Determine the datetime at which each issue was completed
+  //     let completionEventsMap = getCompletionEvents(getStatusChangesByIssueKeyMap(filteredIssueArray), futureStatuses);
+  //     // Sort the map by time
+  //     let sortedCompletionEvents = completionEventsMap.sort((a, b) => { return a.completionTransitionDateTime - b.completionTransitionDateTime });
+
+  //     // loop through the result, calculating rolling velocity for each issue
+  //     let velocities = [];
+  //     let completedIssueIndex = 0;
+  //     let calcEndDatetime = window.to.getTime() > window.now.getTime() ? window.now : window.to;
+  //     for (let curDateTime = new Date(window.from); curDateTime <= calcEndDatetime; curDateTime.setTime(curDateTime.getTime() + window.intervalMs)) {
+
+  //       let twoweeksago = new Date(curDateTime).setDate(curDateTime.getDate() - 14);
+
+  //       for (; completedIssueIndex <= sortedCompletionEvents.length; completedIssueIndex++) {
+  //         let calculateVelocity = false;
+  //         if (completedIssueIndex == sortedCompletionEvents.length) {
+  //           // The current date exceeds the end of the completed issues
+  //           calculateVelocity = true;
+  //         } else {
+  //           const completedIssue = sortedCompletionEvents[completedIssueIndex];
+  //           const dateTime = completedIssue.completionTransitionDateTime;
+  //           if (dateTime > curDateTime) calculateVelocity = true;
+  //         }
+
+  //         let velocity = 0;
+  //         if (calculateVelocity) {
+  //           for (let issueIndex = completedIssueIndex - 1; issueIndex >= 0; issueIndex--) {
+  //             const priorCompletionEvent = sortedCompletionEvents[issueIndex];
+  //             // If it's more than 2 weeks ago, then it doesn't count in the velocity and everything else in the array is older so break out
+  //             if (priorCompletionEvent.completionTransitionDateTime < twoweeksago) break;
+    
+  //             let deltaV = getIssueSize(priorCompletionEvent.issue); 
+  //             if (priorCompletionEvent.transitionType == "regression") {
+  //               // If it's a regression then we subtract it from the velocity
+  //               deltaV = deltaV * -1;
+  //             }
+  //             velocity += deltaV;
+  //           }
+  //           velocities.push([velocity, Math.floor(curDateTime)]);
+  //           break;
+  //         }
+  //       }
+  //     }
+
+  //     // Update the cache so we can quickly retrieve the current velocity
+  //     gVelocityCacheWindow = window;
+  //     gVelocityCacheFutureStatuses = futureStatuses;
+  //     gVelocityCache = velocities;
+  //     gVelocityCacheProjectKey = projectKey;
+
+  //   });
+  // } else {
+  //   return Promise.resolve();
+  // }
+}
+
 function getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey) {
   return gCacheManagementLock.acquire("cycleTimeCache", () => {
     return unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey);
@@ -562,6 +656,7 @@ function getPromisesForMetric(requestId, window, target, result) {
     case METRICS[9]: return getInitiativeProjectionPromise(requestId, window, target, result);
     case METRICS[10]: return getReleaseProjectionPromise(requestId, window, target, result);
     case METRICS[11]: return getReleaseEpicsPromise(requestId, window, target, result);
+    case METRICS[12]: return getDefectRaiseRatePromise(requestId, window, target, result);
   }
 }
 
@@ -637,9 +732,9 @@ function getDetermineVelocityLimitsPromise(requestId, window, target) {
  * @return {{max: number, cur: number, min: number}} a object containing the bounds of the velocity
  */
 function getVelocityBoundsFromHistoricDataPromise(requestId, window, target) {
-  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
   let projectKey = getProjectKey(target);
-  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
 
     console.info(requestId + ": Executing getVelocityBoundsFromHistoricDataPromise (projectKey=" + projectKey + ")");
 
@@ -1138,9 +1233,10 @@ function getVersionIds(target) {
 /**
  * 
  * @param {string} toStatus The status to start from
+ * @param {boolean} completionOnly if true then statuses that are considered "cancelled" are removed
  * @return {string[]} an array of statuses starting with toStatus
  */
-function getFutureStatusesFromStartingStatus(toStatus) {
+function getFutureStatusesFromStartingStatus(toStatus, completionOnly = false) {
   // Statuses are in value stream order, so get every status after the one we want
   let futureStatuses = [toStatus];
   let gotIt = false;
@@ -1151,6 +1247,11 @@ function getFutureStatusesFromStartingStatus(toStatus) {
       gotIt = true;
     }
   });
+  if (completionOnly) {
+    futureStatuses = futureStatuses.filter((value) => {
+      return !CANCELLED_STATUSES.includes(value);
+    });
+  }
   return futureStatuses;
 }
 
@@ -1191,10 +1292,10 @@ function getInStringFromStatusArray(statusArray) {
  */
 function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
 
-  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
   let projectKey = getProjectKey(target);
 
-  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
     return result.push({
       target: target,
       datapoints: [gVelocityCache[gVelocityCache.length-1]]
@@ -1212,10 +1313,10 @@ function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
  */
 function getRolling2WeekVelocityPromise(requestId, window, target, result) {
 
-  let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
   let projectKey = getProjectKey(target);
 
-  return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
     // If the time frame included a future projection, then add a projection point based on the last velocity calculated
     let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
     padEndToWindow(velocities, window);
@@ -1225,6 +1326,30 @@ function getRolling2WeekVelocityPromise(requestId, window, target, result) {
       datapoints: velocities
     });
   });
+
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
+ * @param {*} result The result
+ */
+function getDefectRaiseRatePromise(requestId, window, target, result) {
+
+  // let projectKey = getProjectKey(target);
+
+  // return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+  //   // If the time frame included a future projection, then add a projection point based on the last velocity calculated
+  //   let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
+  //   padEndToWindow(velocities, window);
+  //   // Return a time series object type
+  //   return result.push({
+  //     target: target,
+  //     datapoints: velocities
+  //   });
+  // });
 
 }
 
