@@ -385,7 +385,7 @@ function getDefectRaiseRateCacheUpdatePromise(requestId, window, futureStatuses,
  * @param {*} projectKey 
  */
 function unsafeGetDefectRaiseRateCacheUpdatePromise(requestId, window, futureStatuses, projectKey) {
-
+  // TODO
   // if (gVelocityCacheWindow == null || window.to > gVelocityCacheWindow.to || window.intervalMs != gVelocityCacheWindow.intervalMs || futureStatuses != gVelocityCacheFutureStatuses || gVelocityCacheProjectKey != projectKey) {
   //   return getFullIssueArrayCacheUpdatePromise(requestId, window).then((fullIssuesArray) => {
 
