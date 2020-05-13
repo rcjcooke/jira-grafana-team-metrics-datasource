@@ -15,21 +15,25 @@ The configuration options for each metric are specified here.
 
 ### Current 2 week velocity
 
-Example: `{"toStatus": "Deployed", "projectKey": "ENG"}`
+Example: `{"toStatus": "Deployed", "projectKey": "ENG", "addBugsDefault": false}`
 
 | Key | Description | Possible Values | Descriptions |
 | --- | ----------- | --------------- | ------------ |
 | toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
 | projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| addBugsDefault | if true then if bugs don't have a size then their size is returned with a default bug size | true, false | |
+| bugDefaultSize | The default size to use for bugs if addBugsDefault is true (if unspecified then a hard coded default of 2 story points is used) | any integer | |
 
 ### Rolling 2 week velocity
 
-Example: `{"toStatus": "Deployed", "projectKey": "ENG"}`
+Example: `{"toStatus": "Deployed", "projectKey": "ENG", "addBugsDefault": true, "bugDefaultSize": 2}`
 
 | Key | Description | Possible Values | Descriptions |
 | --- | ----------- | --------------- | ------------ |
 | toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
 | projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| addBugsDefault | if true then if bugs don't have a size then their size is returned with a default bug size | true, false | |
+| bugDefaultSize | The default size to use for bugs if addBugsDefault is true (if unspecified then a hard coded default of 2 story points is used) | any integer | |
 
 ### Current 2 week average cycle time per point
 
@@ -74,7 +78,9 @@ Example:
     "cur": 40,
     "min": 30
   },
-  "releaseDate": "2020/02/28"
+  "releaseDate": "2020/02/28",
+  "addBugsDefault": true,
+  "bugDefaultSize": 2
 }
 ```
 
@@ -87,6 +93,8 @@ Example:
 |         |                                         | `Limits` | The velocity bounds are calculated from the `projectKey` velocity in the timeframe displayed with the minimum, current and maximum velocities in the timeframe used to calculate the bounds of the projection |
 | vBounds | Only required if `vSource` == `Explicit`. Specifies the min, max and current velocities to use for projection. Required 2 weekly velocity figures in story points | `{"max": X, "cur": Y, "min": Z}` | Must be in the specified nested JSON structure. X, Y and Z being velocity values which can be fractional |
 | releaseDate | A planned release date. Used to show a vertical line on the burnup | Any valid date format, e.g. YYYY/MM/DD | The release date |
+| addBugsDefault | if true then if bugs don't have a size then their size is returned with a default bug size | true, false | |
+| bugDefaultSize | The default size to use for bugs if addBugsDefault is true (if unspecified then a hard coded default of 2 story points is used) | any integer | |
 
 ## Running on a Raspberry PI
 
