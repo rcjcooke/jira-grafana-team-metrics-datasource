@@ -16,6 +16,8 @@ import fs from 'fs';
 
 // Story size used if none is specified (note: this doesn't override a size specifically set to 0)
 const DEFAULT_STORY_SIZE = 0;
+// The size to return for a bug if no size is specified - this is only used when explicitly requested in config
+const DEFAULT_BUG_SIZE = 2;
 const METRICS = [
   'Current 2 week velocity',
   'Rolling 2 week velocity',
@@ -85,6 +87,8 @@ let gVelocityCache = []; // The cache of velocities ([[velocity, Math.floor(Date
 let gVelocityCacheWindow = null; // The window information that applies to the velocities cache
 let gVelocityCacheFutureStatuses = null; // The future statuses for the cached velocities
 let gVelocityCacheProjectKey = null; // The project key for which the velocity cache was calculated
+let gVelocityCacheAddBugsDefault = null; // True if bugs were included in velocity cache calculation
+let gVelocityCacheBugsDefaultSize = null; // Default bug size used in velocity cache calculation
 
 let gCycleTimeCache = {}; // The cache of cycle times - measured in days per point; projectKey => {cycleTimes: [[cycletime, Math.floor(Date)]], fromStatuses: [string], futureStatuses: [string], lastUpdateTime: Date}
 
@@ -278,9 +282,18 @@ function unsafeGetFullEventLogCacheUpdatePromise(requestId, window) {
   }
 }
 
-function getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey) {
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {*} futureStatuses 
+ * @param {*} projectKey 
+ * @param {boolean} addBugsDefault - if true then if bugs don't have a size then their size is returned with a default bug size
+ * @param {number} bugDefaultSize - The default size to use for bugs if addBugsDefault is true
+ */
+function getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey, addBugsDefault, bugDefaultSize) {
   return gCacheManagementLock.acquire("velocityCache", () => {
-    return unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey);
+    return unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey, addBugsDefault, bugDefaultSize);
   }).then( (result) => {
     // lock released
     return result;
@@ -293,13 +306,23 @@ function getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projec
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
  * @param {*} futureStatuses 
  * @param {*} projectKey 
+ * @param {boolean} addBugsDefault - if true then if bugs don't have a size then their size is returned with a default bug size
+ * @param {number} bugDefaultSize - The default size to use for bugs if addBugsDefault is true
  */
-function unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey) {
+function unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey, addBugsDefault, bugDefaultSize) {
 
-  if (gVelocityCacheWindow == null || window.to > gVelocityCacheWindow.to || window.intervalMs != gVelocityCacheWindow.intervalMs || futureStatuses != gVelocityCacheFutureStatuses || gVelocityCacheProjectKey != projectKey) {
+  let outOfDate = gVelocityCacheWindow == null ||
+                    window.to > gVelocityCacheWindow.to || 
+                    window.intervalMs != gVelocityCacheWindow.intervalMs || 
+                  futureStatuses != gVelocityCacheFutureStatuses || 
+                  gVelocityCacheProjectKey != projectKey ||
+                  gVelocityCacheAddBugsDefault != addBugsDefault ||
+                  gVelocityCacheBugsDefaultSize != bugDefaultSize;
+
+  if (outOfDate) {
     return getFullIssueArrayCacheUpdatePromise(requestId, window).then((fullIssuesArray) => {
 
-      console.info(requestId + ": Executing getVelocityCacheUpdatePromise (projectKey=" + projectKey + ")");
+      console.info(requestId + ": Executing getVelocityCacheUpdatePromise (projectKey=" + projectKey + ", addBugsDefault=" + addBugsDefault + ")");
 
       // Filter out Epics and Initiatives
       let filteredIssueArray = fullIssuesArray.filter((issue) => {
@@ -343,7 +366,7 @@ function unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, 
               // If it's more than 2 weeks ago, then it doesn't count in the velocity and everything else in the array is older so break out
               if (priorCompletionEvent.completionTransitionDateTime < twoweeksago) break;
     
-              let deltaV = getIssueSize(priorCompletionEvent.issue); 
+              let deltaV = getIssueSize(priorCompletionEvent.issue, addBugsDefault, bugDefaultSize); 
               if (priorCompletionEvent.transitionType == "regression") {
                 // If it's a regression then we subtract it from the velocity
                 deltaV = deltaV * -1;
@@ -357,10 +380,12 @@ function unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, 
       }
 
       // Update the cache so we can quickly retrieve the current velocity
+      gVelocityCache = velocities;
       gVelocityCacheWindow = window;
       gVelocityCacheFutureStatuses = futureStatuses;
-      gVelocityCache = velocities;
       gVelocityCacheProjectKey = projectKey;
+      gVelocityCacheAddBugsDefault = addBugsDefault;
+      gVelocityCacheBugsDefaultSize = bugDefaultSize;
 
     });
   } else {
@@ -734,7 +759,10 @@ function getDetermineVelocityLimitsPromise(requestId, window, target) {
 function getVelocityBoundsFromHistoricDataPromise(requestId, window, target) {
   let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
   let projectKey = getProjectKey(target);
-  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
+  let addBugsDefault = getAddBugsDefault(target);
+  let bugDefaultSize = getBugDefaultSize(target);
+
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey, addBugsDefault, bugDefaultSize).then(() => {
 
     console.info(requestId + ": Executing getVelocityBoundsFromHistoricDataPromise (projectKey=" + projectKey + ")");
 
@@ -1055,8 +1083,10 @@ function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
 
   let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
   let projectKey = getProjectKey(target);
+  let addBugsDefault = getAddBugsDefault(target);
+  let bugDefaultSize = getBugDefaultSize(target);
 
-  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey, addBugsDefault, bugDefaultSize).then(() => {
     return result.push({
       target: target,
       datapoints: [gVelocityCache[gVelocityCache.length-1]]
@@ -1076,8 +1106,10 @@ function getRolling2WeekVelocityPromise(requestId, window, target, result) {
 
   let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
   let projectKey = getProjectKey(target);
+  let addBugsDefault = getAddBugsDefault(target);
+  let bugDefaultSize = getBugDefaultSize(target);
 
-  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey, addBugsDefault, bugDefaultSize).then(() => {
     // If the time frame included a future projection, then add a projection point based on the last velocity calculated
     let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
     padEndToWindow(velocities, window);
@@ -1376,6 +1408,41 @@ function getVersionIds(target) {
     }
   }
   return versionIds;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {number} the default bug size to use measured in story points
+ */
+function getBugDefaultSize(target) {
+  // Default size is specified in the constant
+  let bugDefaultSize = DEFAULT_BUG_SIZE;
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('bugDefaultSize')) {
+        bugDefaultSize = target.data.bugDefaultSize;
+      }
+    }
+  }
+  return bugDefaultSize;
+}
+
+/**
+ * 
+ * @param {*} target 
+ * @return {boolean} true of false depending on whether bugs should be included in velocity calculations
+ */
+function getAddBugsDefault(target) {
+  let addBugsDefault = false;
+  if (target.hasOwnProperty('data')) {
+    if (target.data != null) {
+      if (target.data.hasOwnProperty('addBugsDefault')) {
+        addBugsDefault = target.data.addBugsDefault;
+      }
+    }
+  }
+  return addBugsDefault;
 }
 
 /* ========================== */
@@ -2016,13 +2083,20 @@ function calculateScopeAndBurnupTimeseries(window, eventLog, targetId, isRelease
  * Note: customfield_10016 = Story Points
  * 
  * @param {Object} issue - JIRA issue object
+ * @param {boolean} addBugsDefault - if true then if bugs don't have a size then their size is returned with a default bug size
+ * @param {number} bugDefaultSize - The default size to use for bugs if addBugsDefault is true
  * @returns {number} - The size as specified by the Story Points field or a default value if it isn't set
  */
-function getIssueSize(issue) {
+function getIssueSize(issue, addBugsDefault = false, bugDefaultSize) {
   let size = issue.fields.customfield_10016;
   if (size == null) {
-    return DEFAULT_STORY_SIZE;
-  } else {
+    if (addBugsDefault) {
+      return issue.fields.issuetype.name == 'Bug' ? bugDefaultSize : DEFAULT_STORY_SIZE;
+    } else {
+      return DEFAULT_STORY_SIZE;
+    }
+  }
+    else {
     return parseInt(size);
   }
 }
