@@ -1045,31 +1045,179 @@ function getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, targe
 }
 
 /**
- * Pads out the dataPoints array to include a first point at the beginning of the window. This will be the same as the first value.
  * 
- * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window 
+ * @param {*} target 
+ * @param {*} result 
  */
-function padStartToWindow(dataPoints, window) {
+function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
 
-  if (dataPoints[0][1] != Math.floor(window.from)) {
-    dataPoints.unshift([dataPoints[0][0], Math.floor(window.from)])
-  }
+  let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
+  let projectKey = getProjectKey(target);
+
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
+    return result.push({
+      target: target,
+      datapoints: [gVelocityCache[gVelocityCache.length-1]]
+    });
+  });
 
 }
 
 /**
- * Pads out the dataPoints array to include a last point at the end. This will be the same as the last value.
  * 
- * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
+ * @param {*} result The result
  */
-function padEndToWindow(dataPoints, window) {
+function getRolling2WeekVelocityPromise(requestId, window, target, result) {
 
-  if (dataPoints[dataPoints.length-1][1] != Math.floor(window.to)) {
-    dataPoints.push([dataPoints[dataPoints.length-1][0], Math.floor(window.to)])
+  let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
+  let projectKey = getProjectKey(target);
+
+  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
+    // If the time frame included a future projection, then add a projection point based on the last velocity calculated
+    let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
+    padEndToWindow(velocities, window);
+    // Return a time series object type
+    return result.push({
+      target: target,
+      datapoints: velocities
+    });
+  });
+
+}
+
+/**
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
+ * @param {*} result The result
+ */
+function getDefectRaiseRatePromise(requestId, window, target, result) {
+
+  // let projectKey = getProjectKey(target);
+
+  // return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
+  //   // If the time frame included a future projection, then add a projection point based on the last velocity calculated
+  //   let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
+  //   padEndToWindow(velocities, window);
+  //   // Return a time series object type
+  //   return result.push({
+  //     target: target,
+  //     datapoints: velocities
+  //   });
+  // });
+
+}
+
+/**
+ * Create a Grafana table of tickets from a JIRA JQL Query
+ * 
+ * @param {*} target The target object from Grafana defining the query data requirement
+ * @param {*[]} result The result array object to aggregate results to
+ * @param {string} jql The JQL QUery string that gets the tickets required in the table
+ * @return {Promise} The Promise that will return the table
+ */
+function getTicketsTableFromJQLPromise(target, result, jql) {
+
+  return gJira.search.search({ jql: jql }).then((jiraRes) => {
+
+    let tableRows = [];
+    jiraRes.issues.forEach(issue => {
+      // customfield_10008 = Epic Link
+      tableRows.push([issue.key, issue.fields.summary, issue.fields.customfield_10008]);
+    });
+
+    // Only returns a table type (not timeserie)
+    return result.push({
+      target: target,
+      columns: [
+        {text: "Key", type: "string"},
+        {text: "Title", type: "string"},
+        {text: "Epic Key", type: "string"}
+      ],
+      rows: tableRows,
+      type: "table"
+    });
+
+  });
+
+}
+
+/**
+ * Retrieves the list of Epics that are in or have children in the specified release.
+ * 
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
+ * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
+ * @param {*} result The result
+ * @param {string} epicKeys The keys of the Epics we want to include (gets populated by the early runs of this method)
+ * @param {number} startAt The result number to start at (for handling paginated responses)
+ */
+function getReleaseEpicsPromise(requestId, window, target, result, epicKeys = [], startAt = 0) {
+
+  let versionIDs = getVersionIds(target);
+  if (versionIDs.length == 0) return Promise.resolve(result);
+
+  let jql = 'fixVersion IN (' + versionIDs.join(',') + ') AND issuetype IN (Story, Bug)';
+
+  return gJira.search.search({ jql: jql, startAt: startAt}).then((jiraRes) => {
+
+    let totalResults = jiraRes.total;
+    let maxResults = jiraRes.maxResults;
+
+    console.info(requestId + ": Executing getReleaseEpicsPromise (maxResults=" + totalResults + ", startAt=" + startAt + ")");
+
+    jiraRes.issues.forEach((issue) => {
+      if (issue.fields.issuetype.name == "Epic") {
+        epicKeys.push(issue.key);
+      } else if (issue.fields.issuetype.name == "Story") {
+        if (issue.fields.customfield_10008) {
+          epicKeys.push(issue.fields.customfield_10008);
+        }
+      }
+    });
+
+    // If we haven't got all the results yet then keep building the array
+    if (startAt + maxResults < totalResults) {
+      return getReleaseEpicsPromise(requestId, window, target, result, epicKeys, startAt + maxResults);
+    }
+
+    // Got all the Epic Keys, now we need to get their details
+    return populateReleaseEpics(requestId, window, target, result, epicKeys);
+  });
+}
+
+/* ========================== */
+/* REQUEST PARSING            */
+/* ========================== */
+
+/**
+ * 
+ * @param {*} body 
+ * @return {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} The window to return data in
+ */
+function getWindowFromRequest(body) {
+  return {
+    now: new Date(),
+    from: new Date(body.range.from),
+    to: new Date(body.range.to),
+    intervalMs: body.intervalMs,
+    maxDataPoints: body.maxDataPoints
   }
+}
 
+/**
+ * 
+ * @param {*} body 
+ * @return {string} request ID, e.g. Q398
+ */
+function getRequestIDFromRequest(body) {
+  return body.requestId;
 }
 
 /**
@@ -1230,243 +1378,9 @@ function getVersionIds(target) {
   return versionIds;
 }
 
-/**
- * 
- * @param {string} toStatus The status to start from
- * @param {boolean} completionOnly if true then statuses that are considered "cancelled" are removed
- * @return {string[]} an array of statuses starting with toStatus
- */
-function getFutureStatusesFromStartingStatus(toStatus, completionOnly = false) {
-  // Statuses are in value stream order, so get every status after the one we want
-  let futureStatuses = [toStatus];
-  let gotIt = false;
-  STATUSES.forEach(status => {
-    if (gotIt) {
-      futureStatuses.push(status);
-    } else if (status == toStatus) {
-      gotIt = true;
-    }
-  });
-  if (completionOnly) {
-    futureStatuses = futureStatuses.filter((value) => {
-      return !CANCELLED_STATUSES.includes(value);
-    });
-  }
-  return futureStatuses;
-}
-
-/**
- * 
- * @param {string} endStatus The status to finish on
- * @return {string[]} an ordered array of statuses starting before endStatus
- */
-function getPreviousStatusesFromStartingStatus(endStatus) {
-  // Statuses are in value stream order, so get every status before the one we want
-  let previousStatuses = [];
-  let gotIt = false;
-  STATUSES.forEach(status => {
-    if (!gotIt) {
-      previousStatuses.push(status);
-    }
-    if (status == endStatus) {
-      gotIt = true;
-    }
-  });
-  return previousStatuses;
-}
-
-function getInStringFromStatusArray(statusArray) {
-  let updatedArray = [];
-  statusArray.forEach(status => {
-    updatedArray.push('"' + status + '"');
-  });
-  return updatedArray.join(',');
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {*} window 
- * @param {*} target 
- * @param {*} result 
- */
-function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
-
-  let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
-  let projectKey = getProjectKey(target);
-
-  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
-    return result.push({
-      target: target,
-      datapoints: [gVelocityCache[gVelocityCache.length-1]]
-    });
-  });
-
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
- * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
- * @param {*} result The result
- */
-function getRolling2WeekVelocityPromise(requestId, window, target, result) {
-
-  let completionStatuses = getFutureStatusesFromStartingStatus(getToStatus(target), true);
-  let projectKey = getProjectKey(target);
-
-  return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey).then(() => {
-    // If the time frame included a future projection, then add a projection point based on the last velocity calculated
-    let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
-    padEndToWindow(velocities, window);
-    // Return a time series object type
-    return result.push({
-      target: target,
-      datapoints: velocities
-    });
-  });
-
-}
-
-/**
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
- * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
- * @param {*} result The result
- */
-function getDefectRaiseRatePromise(requestId, window, target, result) {
-
-  // let projectKey = getProjectKey(target);
-
-  // return getVelocityCacheUpdatePromise(requestId, window, futureStatuses, projectKey).then(() => {
-  //   // If the time frame included a future projection, then add a projection point based on the last velocity calculated
-  //   let velocities = gVelocityCache.filter(value => {return value[1] >= Math.floor(window.from)});
-  //   padEndToWindow(velocities, window);
-  //   // Return a time series object type
-  //   return result.push({
-  //     target: target,
-  //     datapoints: velocities
-  //   });
-  // });
-
-}
-
-/**
- * Create a Grafana table of tickets from a JIRA JQL Query
- * 
- * @param {*} target The target object from Grafana defining the query data requirement
- * @param {*[]} result The result array object to aggregate results to
- * @param {string} jql The JQL QUery string that gets the tickets required in the table
- * @return {Promise} The Promise that will return the table
- */
-function getTicketsTableFromJQLPromise(target, result, jql) {
-
-  return gJira.search.search({ jql: jql }).then((jiraRes) => {
-
-    let tableRows = [];
-    jiraRes.issues.forEach(issue => {
-      // customfield_10008 = Epic Link
-      tableRows.push([issue.key, issue.fields.summary, issue.fields.customfield_10008]);
-    });
-
-    // Only returns a table type (not timeserie)
-    return result.push({
-      target: target,
-      columns: [
-        {text: "Key", type: "string"},
-        {text: "Title", type: "string"},
-        {text: "Epic Key", type: "string"}
-      ],
-      rows: tableRows,
-      type: "table"
-    });
-
-  });
-
-}
-
-/**
- * Performs a binary search on the provided sorted list and returns the index of the item if found. If it can't be found it'll return -1.
- * Note: Taken from https://github.com/Olical/binary-search/blob/master/src/binarySearch.js
- * 
- * @param {*[]} issueList Items to search through.
- * @param {*} item The item to look for.
- * @param exactOnly if false, then this will return index of the closest item if the item isn't found, rather than -1
- * @return {Number} The index of the item if found, -1 if not.
- */
-function binarySearchIssueIndex(issueList, id, exactOnly = true) {
-  var min = 0;
-  var max = issueList.length - 1;
-  var guess;
-
-  var bitwise = (max <= 2147483647) ? true : false;
-  if (bitwise) {
-    while (min <= max) {
-      guess = (min + max) >> 1;
-      if (issueList[guess].id === id) { return guess; }
-      else {
-        if (issueList[guess].id < id) { min = guess + 1; }
-        else { max = guess - 1; }
-      }
-    }
-  } else {
-    while (min <= max) {
-      guess = Math.floor((min + max) / 2);
-      if (issueList[guess].id === id) { return guess; }
-      else {
-        if (issueList[guess].id < id) { min = guess + 1; }
-        else { max = guess - 1; }
-      }
-    }
-  }
-  return exactOnly ? -1 : guess;
-}
-
-/**
- * Retrieves the list of Epics that are in or have children in the specified release.
- * 
- * @param {string} requestId The Request ID from Grafana, e.g. Q123
- * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
- * @param {{target: string, refId: string, type: string, data: {}}} target The request target object
- * @param {*} result The result
- * @param {string} epicKeys The keys of the Epics we want to include (gets populated by the early runs of this method)
- * @param {number} startAt The result number to start at (for handling paginated responses)
- */
-function getReleaseEpicsPromise(requestId, window, target, result, epicKeys = [], startAt = 0) {
-
-  let versionIDs = getVersionIds(target);
-  if (versionIDs.length == 0) return Promise.resolve(result);
-
-  let jql = 'fixVersion IN (' + versionIDs.join(',') + ') AND issuetype IN (Story, Bug)';
-
-  return gJira.search.search({ jql: jql, startAt: startAt}).then((jiraRes) => {
-
-    let totalResults = jiraRes.total;
-    let maxResults = jiraRes.maxResults;
-
-    console.info(requestId + ": Executing getReleaseEpicsPromise (maxResults=" + totalResults + ", startAt=" + startAt + ")");
-
-    jiraRes.issues.forEach((issue) => {
-      if (issue.fields.issuetype.name == "Epic") {
-        epicKeys.push(issue.key);
-      } else if (issue.fields.issuetype.name == "Story") {
-        if (issue.fields.customfield_10008) {
-          epicKeys.push(issue.fields.customfield_10008);
-        }
-      }
-    });
-
-    // If we haven't got all the results yet then keep building the array
-    if (startAt + maxResults < totalResults) {
-      return getReleaseEpicsPromise(requestId, window, target, result, epicKeys, startAt + maxResults);
-    }
-
-    // Got all the Epic Keys, now we need to get their details
-    return populateReleaseEpics(requestId, window, target, result, epicKeys);
-  });
-}
+/* ========================== */
+/* GRAFANA OUTPUT GENERATION  */
+/* ========================== */
 
 function populateReleaseEpics(requestId, window, target, result, epicKeys, tableRows = [], startAt = 0) {
 
@@ -1506,10 +1420,6 @@ function populateReleaseEpics(requestId, window, target, result, epicKeys, table
 
 }
 
-/* ========================== */
-/* CALCS / UTILITIES          */
-/* ========================== */
-
 function addVerticalLine(datetime, targetName, maxVerticalPoint, result) {
   result.push({
     target: targetName,
@@ -1518,6 +1428,75 @@ function addVerticalLine(datetime, targetName, maxVerticalPoint, result) {
       [maxVerticalPoint, Math.floor(datetime)]
     ]
   });
+}
+
+/**
+ * Pads out the dataPoints array to include a first point at the beginning of the window. This will be the same as the first value.
+ * 
+ * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
+ */
+function padStartToWindow(dataPoints, window) {
+
+  if (dataPoints[0][1] != Math.floor(window.from)) {
+    dataPoints.unshift([dataPoints[0][0], Math.floor(window.from)])
+  }
+
+}
+
+/**
+ * Pads out the dataPoints array to include a last point at the end. This will be the same as the last value.
+ * 
+ * @param {[number, number][]} dataPoints The data points array in the format required for Grafana
+ * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The range the data should be returned within
+ */
+function padEndToWindow(dataPoints, window) {
+
+  if (dataPoints[dataPoints.length-1][1] != Math.floor(window.to)) {
+    dataPoints.push([dataPoints[dataPoints.length-1][0], Math.floor(window.to)])
+  }
+
+}
+
+/* ========================== */
+/* CALCS / UTILITIES          */
+/* ========================== */
+
+/**
+ * Performs a binary search on the provided sorted list and returns the index of the item if found. If it can't be found it'll return -1.
+ * Note: Taken from https://github.com/Olical/binary-search/blob/master/src/binarySearch.js
+ * 
+ * @param {*[]} issueList Items to search through.
+ * @param {*} item The item to look for.
+ * @param exactOnly if false, then this will return index of the closest item if the item isn't found, rather than -1
+ * @return {Number} The index of the item if found, -1 if not.
+ */
+function binarySearchIssueIndex(issueList, id, exactOnly = true) {
+  var min = 0;
+  var max = issueList.length - 1;
+  var guess;
+
+  var bitwise = (max <= 2147483647) ? true : false;
+  if (bitwise) {
+    while (min <= max) {
+      guess = (min + max) >> 1;
+      if (issueList[guess].id === id) { return guess; }
+      else {
+        if (issueList[guess].id < id) { min = guess + 1; }
+        else { max = guess - 1; }
+      }
+    }
+  } else {
+    while (min <= max) {
+      guess = Math.floor((min + max) / 2);
+      if (issueList[guess].id === id) { return guess; }
+      else {
+        if (issueList[guess].id < id) { min = guess + 1; }
+        else { max = guess - 1; }
+      }
+    }
+  }
+  return exactOnly ? -1 : guess;
 }
 
 /**
@@ -2219,6 +2198,59 @@ function calculateAverageCycleTimePerPointForIssues(statusChangeMap, fromStatuse
 
 }
 
+/**
+ * 
+ * @param {string} toStatus The status to start from
+ * @param {boolean} completionOnly if true then statuses that are considered "cancelled" are removed
+ * @return {string[]} an array of statuses starting with toStatus
+ */
+function getFutureStatusesFromStartingStatus(toStatus, completionOnly = false) {
+  // Statuses are in value stream order, so get every status after the one we want
+  let futureStatuses = [toStatus];
+  let gotIt = false;
+  STATUSES.forEach(status => {
+    if (gotIt) {
+      futureStatuses.push(status);
+    } else if (status == toStatus) {
+      gotIt = true;
+    }
+  });
+  if (completionOnly) {
+    futureStatuses = futureStatuses.filter((value) => {
+      return !CANCELLED_STATUSES.includes(value);
+    });
+  }
+  return futureStatuses;
+}
+
+/**
+ * 
+ * @param {string} endStatus The status to finish on
+ * @return {string[]} an ordered array of statuses starting before endStatus
+ */
+function getPreviousStatusesFromStartingStatus(endStatus) {
+  // Statuses are in value stream order, so get every status before the one we want
+  let previousStatuses = [];
+  let gotIt = false;
+  STATUSES.forEach(status => {
+    if (!gotIt) {
+      previousStatuses.push(status);
+    }
+    if (status == endStatus) {
+      gotIt = true;
+    }
+  });
+  return previousStatuses;
+}
+
+function getInStringFromStatusArray(statusArray) {
+  let updatedArray = [];
+  statusArray.forEach(status => {
+    updatedArray.push('"' + status + '"');
+  });
+  return updatedArray.join(',');
+}
+
 function earlierThan(a, b) {
   return STATUSES.indexOf(a) < STATUSES.indexOf(b);
 }
@@ -2239,30 +2271,6 @@ function logStatusChangeListForIssues(issues) {
     console.info(statusChange.datetime.toUTCString() + ',' + statusChange.issue.key + ',' + statusChange.fromStatus + ',' + statusChange.toStatus);
   });
 
-}
-
-/**
- * 
- * @param {*} body 
- * @return {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} The window to return data in
- */
-function getWindowFromRequest(body) {
-  return {
-    now: new Date(),
-    from: new Date(body.range.from),
-    to: new Date(body.range.to),
-    intervalMs: body.intervalMs,
-    maxDataPoints: body.maxDataPoints
-  }
-}
-
-/**
- * 
- * @param {*} body 
- * @return {string} request ID, e.g. Q398
- */
-function getRequestIDFromRequest(body) {
-  return body.requestId;
 }
 
 /* ========================== */
