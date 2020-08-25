@@ -98,7 +98,7 @@ Example:
 
 ## Running on a Raspberry PI
 
-Make aure the Simple JSON plugin is installed on your grafana instance:
+Make sure the Simple JSON plugin is installed on your grafana instance:
 
 `sudo grafana-cli plugins install simpod-json-datasource`
 
@@ -115,7 +115,7 @@ Set up the dashboard:
 2. Click "Upload JSON"
 3. Navigate to the json file in the grafana sub-directory of this project on your lcoal machine and import it
 
-To run this as a service on a rasperry pi:
+To run this as a service on a raspberry pi:
 
 1. `sudo cp jira-metrics.service /etc/systemd/system/`
 2. `sudo chmod u+rwx /etc/systemd/system/jira-metrics.service`
