@@ -6,13 +6,12 @@
     "configurations": [
         {
             "name": "Launch via npm",
-            "type": "node",
+            "type": "pwa-node",
             "request": "launch",
             "cwd": "${workspaceFolder}",
             "runtimeExecutable": "npm",
             "runtimeArgs": ["run-script", "debug"],
-            "program": "${workspaceFolder}/server.js",
-            "port": 9229
+            "program": "${workspaceFolder}/server.js"
         }
     ]
 }
