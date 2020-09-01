@@ -947,9 +947,10 @@ function getTicketsFinishedLastWeekPromise(requestId, target, result) {
  * @param {*} result 
  */
 function getAcceptanceCriteriaConformancePromise(requestId, target, result) {
-  // customfield_10060 = acceptance critera field
+  // customfield_10060 = acceptance criteria field
 
-  let jql = ('project = "ENG" AND labels = high-viz');
+  // Get all tickets in flight
+  let jql = ('project = ENG and statusCategory = "In Progress"');
 
   return gJira.search.search({ jql: jql }).then((jiraRes) => {
     
@@ -959,7 +960,7 @@ function getAcceptanceCriteriaConformancePromise(requestId, target, result) {
       if (issue.fields.customfield_10060 != null) numACs++;
     });
 
-    // 'timeserie'
+    // 'time series'
     return result.push({
       target: target,
       datapoints: [[numACs/numStories*100, Math.floor(new Date())]]
