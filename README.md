@@ -15,12 +15,13 @@ The configuration options for each metric are specified here.
 
 ### Current 2 week velocity
 
-Example: `{"toStatus": "Deployed", "projectKey": "ENG", "addBugsDefault": false}`
+Example: `{"toStatus": "Deployed", "projectKey": "ENG", "teamId": 9, "addBugsDefault": false}`
 
 | Key | Description | Possible Values | Descriptions |
 | --- | ----------- | --------------- | ------------ |
 | toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
-| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project when the chart is calculated will count towards the velocity | Any JIRA project key | The JIRA project key |
+| teamId | The team for which velocity is being calculated. Only issues that are assigned to the specified team when the chart is calculated will count towards the velocity | Any JIRA team ID number | The JIRA team ID number |
 | addBugsDefault | if true then if bugs don't have a size then their size is returned with a default bug size | true, false | |
 | bugDefaultSize | The default size to use for bugs if addBugsDefault is true (if unspecified then a hard coded default of 2 story points is used) | any integer | |
 
@@ -31,7 +32,8 @@ Example: `{"toStatus": "Deployed", "projectKey": "ENG", "addBugsDefault": true, 
 | Key | Description | Possible Values | Descriptions |
 | --- | ----------- | --------------- | ------------ |
 | toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
-| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project when the chart is calculated will count towards the velocity | Any JIRA project key | The JIRA project key |
+| teamId | The team for which velocity is being calculated. Only issues that are assigned to the specified team when the chart is calculated will count towards the velocity | Any JIRA team ID number | The JIRA team ID number |
 | addBugsDefault | if true then if bugs don't have a size then their size is returned with a default bug size | true, false | |
 | bugDefaultSize | The default size to use for bugs if addBugsDefault is true (if unspecified then a hard coded default of 2 story points is used) | any integer | |
 
@@ -88,7 +90,8 @@ Example:
 | --- | ----------- | --------------- | ------------ |
 | releaseId | The release to calculate the project for | JIRA Release ID number | The number |
 | toStatus | The status the velocity calculation considers to be "complete" | Any status in the value stream | The name of the status |
-| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project when the chart is calculated will count towards the velocity | Any JIRA project key | The JIRA project key |
+| teamId | The team for which velocity is being calculated. Only issues that are assigned to the specified team when the chart is calculated will count towards the velocity | Any JIRA team ID number | The JIRA team ID number |
 | vSource | The source used for the velocity values | `Explicit` | The velocity bounds to display are specified in config under `vBounds` |
 |         |                                         | `Limits` | The velocity bounds are calculated from the `projectKey` velocity in the timeframe displayed with the minimum, current and maximum velocities in the timeframe used to calculate the bounds of the projection |
 | vBounds | Only required if `vSource` == `Explicit`. Specifies the min, max and current velocities to use for projection. Required 2 weekly velocity figures in story points | `{"max": X, "cur": Y, "min": Z}` | Must be in the specified nested JSON structure. X, Y and Z being velocity values which can be fractional |
