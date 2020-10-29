@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jira-grafana-team-metrics-datasource.fullname" . }}
+  labels:
+    {{- include "jira-grafana-team-metrics-datasource.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "jira-grafana-team-metrics-datasource.selectorLabels" . | nindent 4 }}
