@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "jira-grafana-team-metrics-datasource.fullname" . }}-test-connection"
+  labels:
+    {{- include "jira-grafana-team-metrics-datasource.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['{{ include "jira-grafana-team-metrics-datasource.fullname" . }}:{{ .Values.service.port }}']
+  restartPolicy: Never
