@@ -2443,6 +2443,6 @@ gApp.post('/query',
 
   });
 
-gApp.listen(3030)
+gApp.listen(3030,'0.0.0.0')
 
 console.info('Server is listening on port 3030')
