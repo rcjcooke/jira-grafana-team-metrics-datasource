@@ -977,7 +977,7 @@ function getAcceptanceCriteriaConformancePromise(requestId, target, result) {
 
     // 'time series'
     return result.push({
-      target: target,
+      target: target.refId,
       datapoints: [[numACs/numStories*100, Math.floor(new Date())]]
     });
 
@@ -1055,7 +1055,7 @@ function getCurrent2WeekAverageCycleTimePerPointPromise(requestId, window, targe
 
     let cache = gCycleTimeCache[projectKey].cycleTimes;
     return result.push({
-      target: target,
+      target: target.refId,
       datapoints: [cache[cache.length-1]]
     });
   });
@@ -1082,7 +1082,7 @@ function getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, targe
     padEndToWindow(filteredCycleTimes, window);
     // Return a time series object type
     return result.push({
-      target: target,
+      target: target.refId,
       datapoints: filteredCycleTimes
     });
   });
@@ -1105,7 +1105,7 @@ function getCurrent2WeekVelocityPromise(requestId, window, target, result) {
 
   return getVelocityCacheUpdatePromise(requestId, window, completionStatuses, projectKey, teamId, addBugsDefault, bugDefaultSize).then(() => {
     return result.push({
-      target: target,
+      target: target.refId,
       datapoints: [gVelocityCache[gVelocityCache.length-1]]
     });
   });
@@ -1133,7 +1133,7 @@ function getRolling2WeekVelocityPromise(requestId, window, target, result) {
     padEndToWindow(velocities, window);
     // Return a time series object type
     return result.push({
-      target: target,
+      target: target.refId,
       datapoints: velocities
     });
   });
@@ -1157,7 +1157,7 @@ function getDefectRaiseRatePromise(requestId, window, target, result) {
   //   padEndToWindow(velocities, window);
   //   // Return a time series object type
   //   return result.push({
-  //     target: target,
+  //     target: target.refId,
   //     datapoints: velocities
   //   });
   // });
@@ -1271,21 +1271,55 @@ function getRequestIDFromRequest(body) {
 }
 
 /**
+ * In one of the recent version upgrades (~v8) Grafana changed from using target.data to 
+ * target.payload as the mechanism by which the user's request was translated to SimPod. 
+ * This method handles that backwards compatibility.
+ * 
+ * @param {*} target 
+ * @return {*} the JSON request object supplied by the user
+ */
+function getRequestDetail(target) {
+
+  let requestDetailObject = null;
+  if (target.hasOwnProperty('data')) {
+    requestDetailObject = target.data;
+  } else if (target.hasOwnProperty('payload')) {
+    requestDetailObject = target.payload;
+  }
+
+  return requestDetailObject;
+
+}
+
+/**
+ * Generic function to return the value of a request property from the request object.
+ * 
+ * @param {*} target The target object
+ * @param {*} propertyName The property name for the property to retrieve
+ * @param {*} defaultValue An optional default value if a value isn't specified
+ * @param {*} valueXFormFunction An optional transform function to mutate the value on read
+ * @returns 
+ */
+function getRequestProperty(target, propertyName, defaultValue = null, valueXFormFunction = (A => A)) {
+  // Default status is Deploy Queue
+  let value = defaultValue;
+  let requestDetail = getRequestDetail(target);
+  if (requestDetail != null) {
+    if (requestDetail.hasOwnProperty(propertyName)) {
+      value = valueXFormFunction(requestDetail[propertyName]);
+    }
+  }
+  return value;
+}
+
+/**
  * 
  * @param {*} target 
  * @return {string} the target status, e.g. 'Deploy Queue'
  */
 function getToStatus(target) {
   // Default status is Deploy Queue
-  let toStatus = STATUSES[STATUSES.length-1];
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('toStatus')) {
-        toStatus = target.data.toStatus;
-      }
-    }
-  }
-  return toStatus;
+  return getRequestProperty(target, 'toStatus', STATUSES[STATUSES.length-1]);
 }
 
 /**
@@ -1294,15 +1328,7 @@ function getToStatus(target) {
  * @return {string} the target status, e.g. 'Dev'
  */
 function getFromStatus(target) {
-  let fromStatus = STATUSES[0];
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('fromStatus')) {
-        fromStatus = target.data.fromStatus;
-      }
-    }
-  }
-  return fromStatus;
+  return getRequestProperty(target, 'fromStatus', STATUSES[0]);
 }
 
 /**
@@ -1311,15 +1337,7 @@ function getFromStatus(target) {
  * @return {string} the target team Id (e.g. '9')
  */
 function getTeamId(target) {
-  let teamId = null;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('teamId')) {
-        teamId = target.data.teamId;
-      }
-    }
-  }
-  return teamId;
+  return getRequestProperty(target, 'teamId');
 }
 
 /**
@@ -1328,15 +1346,7 @@ function getTeamId(target) {
  * @return {string} the target project key (e.g. 'ENG')
  */
 function getProjectKey(target) {
-  let projectKey = null;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('projectKey')) {
-        projectKey = target.data.projectKey;
-      }
-    }
-  }
-  return projectKey;
+  return getRequestProperty(target, 'projectKey');
 }
 
 /**
@@ -1345,15 +1355,7 @@ function getProjectKey(target) {
  * @return {string} The velocity source, either "Explicit" or "Limits" only at the moment
  */
 function getVelocitySource(target) {
-  let vSource = "Limits";
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('vSource')) {
-        vSource = target.data.vSource;
-      }
-    }
-  }
-  return vSource;
+  return getRequestProperty(target, 'vSource', "Limits");
 }
 
 /**
@@ -1362,15 +1364,7 @@ function getVelocitySource(target) {
  * @return {{max: number, cur: number, min: number}} a object containing the bounds of the velocity
  */
 function getVelocityBounds(target) {
-  let vBounds = {max: 0, cur: 0, min: 0};
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('vBounds')) {
-        vBounds = target.data.vBounds;
-      }
-    }
-  }
-  return vBounds;
+  return getRequestProperty(target, 'vBounds', {max: 0, cur: 0, min: 0});
 }
 
 /**
@@ -1379,15 +1373,7 @@ function getVelocityBounds(target) {
  * @return {Date} The release date
  */
 function getTargetReleaseDate(target) {
-  let releaseDate = new Date();
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('releaseDate')) {
-        releaseDate = new Date(target.data.releaseDate);
-      }
-    }
-  }
-  return releaseDate;
+  return getRequestProperty(target, 'releaseDate', new Date(), d => new Date(d));
 }
 
 /**
@@ -1396,16 +1382,7 @@ function getTargetReleaseDate(target) {
  * @return {string} the target initiative ID, e.g. 12345
  */
 function getInitiativeId(target) {
-  // Default project key is null (which means all projects)
-  let initiativeId = null;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('initiativeId')) {
-        initiativeId = target.data.initiativeId;
-      }
-    }
-  }
-  return initiativeId;
+  return getRequestProperty(target, 'initiativeId');
 }
 
 /**
@@ -1414,16 +1391,7 @@ function getInitiativeId(target) {
  * @return {string} the target release ID, e.g. 12345
  */
 function getReleaseId(target) {
-  // Default project key is null (which means all projects)
-  let releaseId = null;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('releaseId')) {
-        releaseId = target.data.releaseId;
-      }
-    }
-  }
-  return releaseId;
+  return getRequestProperty(target, 'releaseId');
 }
 
 /**
@@ -1433,16 +1401,7 @@ function getReleaseId(target) {
  * @return {number} an array of target version IDs
  */
 function getVersionIds(target) {
-  // Default status is Deploy Queue
-  let versionIds = [];
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('versionIds')) {
-        versionIds = target.data.versionIds;
-      }
-    }
-  }
-  return versionIds;
+  return getRequestProperty(target, 'versionIds', []);
 }
 
 /**
@@ -1452,15 +1411,7 @@ function getVersionIds(target) {
  */
 function getBugDefaultSize(target) {
   // Default size is specified in the constant
-  let bugDefaultSize = DEFAULT_BUG_SIZE;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('bugDefaultSize')) {
-        bugDefaultSize = target.data.bugDefaultSize;
-      }
-    }
-  }
-  return bugDefaultSize;
+  return getRequestProperty(target, 'bugDefaultSize', DEFAULT_BUG_SIZE);
 }
 
 /**
@@ -1469,15 +1420,7 @@ function getBugDefaultSize(target) {
  * @return {boolean} true of false depending on whether bugs should be included in velocity calculations
  */
 function getAddBugsDefault(target) {
-  let addBugsDefault = false;
-  if (target.hasOwnProperty('data')) {
-    if (target.data != null) {
-      if (target.data.hasOwnProperty('addBugsDefault')) {
-        addBugsDefault = target.data.addBugsDefault;
-      }
-    }
-  }
-  return addBugsDefault;
+  return getRequestProperty(target, 'addBugsDefault', false);
 }
 
 /* ========================== */
