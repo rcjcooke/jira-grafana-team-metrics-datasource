@@ -45,7 +45,8 @@ Example: `{"toStatus": "Deployed", "fromStatus": "Prioritised", "projectKey": "E
 | --- | ----------- | --------------- | ------------ |
 | toStatus | When a ticket enters this status, the cycle-time clock stops | Any status in the value stream | The name of the status |
 | fromStatus | When a ticket leaves this status, the cycle-time clock starts | Any status in the value stream | The name of the status |
-| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| projectKey | The project for which cycle time is being calculated. Only issues that are part of the specified project at the time of completion count towards the cycle time | Any JIRA project key | The JIRA project key |
+| teamId | The team for which cycle time is being calculated. Only issues that are assigned to the specified team when the chart is calculated will count towards the cycle time | Any JIRA team ID number | The JIRA team ID number |
 
 ### Rolling 2 week average cycle time per point
 
@@ -55,7 +56,8 @@ Example: `{"toStatus": "Deployed", "fromStatus": "Prioritised", "projectKey": "E
 | --- | ----------- | --------------- | ------------ |
 | toStatus | When a ticket enters this status, the cycle-time clock stops | Any status in the value stream | The name of the status |
 | fromStatus | When a ticket leaves this status, the cycle-time clock starts | Any status in the value stream | The name of the status |
-| projectKey | The project for which velocity is being calculated. Only issues that are part of the specified project at the time of completion count towards the velocity | Any JIRA project key | The JIRA project key |
+| projectKey | The project for which cycle time is being calculated. Only issues that are part of the specified project at the time of completion count towards the cycle time | Any JIRA project key | The JIRA project key |
+| teamId | The team for which cycle time is being calculated. Only issues that are assigned to the specified team when the chart is calculated will count towards the cycle time | Any JIRA team ID number | The JIRA team ID number |
 
 ### Release Progress
 

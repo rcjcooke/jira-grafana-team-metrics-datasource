@@ -91,7 +91,7 @@ let gVelocityCacheTeamId = null; // The team id for which the velocity cache was
 let gVelocityCacheAddBugsDefault = null; // True if bugs were included in velocity cache calculation
 let gVelocityCacheBugsDefaultSize = null; // Default bug size used in velocity cache calculation
 
-let gCycleTimeCache = {}; // The cache of cycle times - measured in days per point; projectKey => {cycleTimes: [[cycletime, Math.floor(Date)]], fromStatuses: [string], futureStatuses: [string], lastUpdateTime: Date}
+let gCycleTimeCache = {}; // The cache of cycle times - measured in days per point; projectKey,teamId => {cycleTimes: [[cycletime, Math.floor(Date)]], fromStatuses: [string], futureStatuses: [string], lastUpdateTime: Date}
 
 let gReleaseScopeAndBurnupDataCache = {}; // id => {scopeData: [[scope, Math.floor(Date)]], burnupData: [[scope, Math.floor(Date)]], lastUpdateTime: Date}
 let gInitiativeScopeAndBurnupDataCache = {}; // id => {scopeData: [[scope, Math.floor(Date)]], burnupData: [[scope, Math.floor(Date)]], lastUpdateTime: Date}
@@ -326,27 +326,8 @@ function unsafeGetVelocityCacheUpdatePromise(requestId, window, futureStatuses, 
 
       console.info(requestId + ": Executing getVelocityCacheUpdatePromise (projectKey=" + projectKey + ", teamId=" + teamId + ", addBugsDefault=" + addBugsDefault + ")");
 
-      // Filter out Epics and Initiatives
-      let filteredIssueArray = fullIssuesArray.filter((issue) => {
-        return issue.fields.issuetype.name != "Initiative" && issue.fields.issuetype.name != "Epic";
-      });
-      // If we're only interested in a specific project (which is likely) then filter it down further
-      if (projectKey != null) {
-        filteredIssueArray = filteredIssueArray.filter((issue) => {
-          return issue.fields.project.key == projectKey;
-        });
-      }
-      // We might also be interested in only a specific team - note that both project and team filters can be used simultaneously
-      if (teamId != null) {
-        filteredIssueArray = filteredIssueArray.filter((issue) => {
-          // If the team is defined, then use it - otherwise it's filtered out
-          if (issue.fields.hasOwnProperty('customfield_10001')) {
-            if (issue.fields.customfield_10001 != null) {
-              return issue.fields.customfield_10001.id == teamId;
-            }
-          }
-        });
-      }
+      // Filter out issues we don't want (Epics, Initatives, projects, teams)
+      let filteredIssueArray = filterOutIssues(fullIssuesArray, projectKey, teamId);
 
       // Determine the datetime at which each issue was completed
       let completionEventsMap = getCompletionEvents(getStatusChangesByIssueKeyMap(filteredIssueArray), futureStatuses);
@@ -497,9 +478,9 @@ function unsafeGetDefectRaiseRateCacheUpdatePromise(requestId, window, futureSta
   // }
 }
 
-function getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey) {
+function getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId) {
   return gCacheManagementLock.acquire("cycleTimeCache", () => {
-    return unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey);
+    return unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId);
   }).then( (result) => {
     // lock released
     return result;
@@ -514,9 +495,9 @@ function getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureS
  * @param {*} futureStatuses 
  * @param {*} projectKey 
  */
-function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey) {
+function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId) {
 
-  let cache = gCycleTimeCache[projectKey];
+  let cache = gCycleTimeCache[projectKey + "," + teamId];
   let outOfDate = true;
   if (cache != null) {
     // Check time window
@@ -530,16 +511,10 @@ function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, f
 
     return getFullIssueArrayCacheUpdatePromise(requestId, window).then((fullIssuesArray) => {
 
-      // Filter out Epics and Initiatives
-      let filteredIssueArray = fullIssuesArray.filter((issue) => {
-        return issue.fields.issuetype.name != "Initiative" && issue.fields.issuetype.name != "Epic";
-      });
-      // If we're only interested in a specific project (which is likely) then filter it down further
-      if (projectKey != null) {
-        filteredIssueArray = filteredIssueArray.filter((issue) => {
-          return issue.fields.project.key == projectKey;
-        });
-      }
+      console.info(requestId + ": Executing getCycleTimeCacheUpdatePromise (projectKey=" + projectKey + ", teamId=" + teamId + ")");
+
+      // Filter out issues we don't want (Epics, Initatives, projects, teams)
+      let filteredIssueArray = filterOutIssues(fullIssuesArray, projectKey, teamId);
 
       // Determine the datetime at which each issue was completed
       let statusChangesByIssueKeyMap = getStatusChangesByIssueKeyMap(filteredIssueArray);
@@ -593,7 +568,7 @@ function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, f
       }
 
       // Update the cache
-      gCycleTimeCache[projectKey] = {
+      gCycleTimeCache[projectKey + "," + teamId] = {
         cycleTimes: outputData,
         fromStatuses: fromStatuses,
         futureStatuses: futureStatuses,
@@ -1049,11 +1024,12 @@ function getCurrent2WeekAverageCycleTimePerPointPromise(requestId, window, targe
 
   let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
   let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
+  let teamId = getTeamId(target);
   let projectKey = getProjectKey(target);
 
-  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
+  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId).then(() => {
 
-    let cache = gCycleTimeCache[projectKey].cycleTimes;
+    let cache = gCycleTimeCache[projectKey + "," + teamId].cycleTimes;
     return result.push({
       target: target.refId,
       datapoints: [cache[cache.length-1]]
@@ -1072,10 +1048,11 @@ function getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, targe
 
   let futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
   let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
+  let teamId = getTeamId(target);
   let projectKey = getProjectKey(target);
 
-  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey).then(() => {
-    let cycleTimes = gCycleTimeCache[projectKey].cycleTimes;
+  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId).then(() => {
+    let cycleTimes = gCycleTimeCache[projectKey + "," + teamId].cycleTimes;
     // Trim the data to start at the beginning of the return window
     let filteredCycleTimes = cycleTimes.filter(value => {return value[1] >= Math.floor(window.from)});
     // If the time frame included a future projection, then add a projection point based on the last velocity calculated
@@ -1273,7 +1250,8 @@ function getRequestIDFromRequest(body) {
 /**
  * In one of the recent version upgrades (~v8) Grafana changed from using target.data to 
  * target.payload as the mechanism by which the user's request was translated to SimPod. 
- * This method handles that backwards compatibility.
+ * This method handles that backwards compatibility. Payload is preferred as target.data 
+ * no longer formats as a JSON object but as a string.
  * 
  * @param {*} target 
  * @return {*} the JSON request object supplied by the user
@@ -1281,10 +1259,10 @@ function getRequestIDFromRequest(body) {
 function getRequestDetail(target) {
 
   let requestDetailObject = null;
-  if (target.hasOwnProperty('data')) {
-    requestDetailObject = target.data;
-  } else if (target.hasOwnProperty('payload')) {
+  if (target.hasOwnProperty('payload')) {
     requestDetailObject = target.payload;
+  } else if (target.hasOwnProperty('data')) {
+    requestDetailObject = target.data;
   }
 
   return requestDetailObject;
@@ -2323,6 +2301,38 @@ function logStatusChangeListForIssues(issues) {
     console.info(statusChange.datetime.toUTCString() + ',' + statusChange.issue.key + ',' + statusChange.fromStatus + ',' + statusChange.toStatus);
   });
 
+}
+
+/**
+ * Filters a list of issues based on provided criteria
+ * 
+ * @param {*} fullIssuesArray 
+ * @param {*} projectKey 
+ * @param {*} teamId 
+ */
+function filterOutIssues(fullIssuesArray, projectKey, teamId) {
+  // Filter out Epics and Initiatives
+  let filteredIssueArray = fullIssuesArray.filter((issue) => {
+    return issue.fields.issuetype.name != "Initiative" && issue.fields.issuetype.name != "Epic";
+  });
+  // If we're only interested in a specific project (which is likely) then filter it down further
+  if (projectKey != null) {
+    filteredIssueArray = filteredIssueArray.filter((issue) => {
+      return issue.fields.project.key == projectKey;
+    });
+  }
+  // We might also be interested in only a specific team - note that both project and team filters can be used simultaneously
+  if (teamId != null) {
+    filteredIssueArray = filteredIssueArray.filter((issue) => {
+      // If the team is defined, then use it - otherwise it's filtered out
+      if (issue.fields.hasOwnProperty('customfield_10001')) {
+        if (issue.fields.customfield_10001 != null) {
+          return issue.fields.customfield_10001.id == teamId;
+        }
+      }
+    });
+  }
+  return filteredIssueArray;
 }
 
 /* ========================== */
