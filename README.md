@@ -4,6 +4,7 @@ Grafana Datasource that connects to JIRA and analyses data to produce team manag
 ## Development / Usage
 * Create a .env file like the .env-example file but with your JIRA credentials (the password is the key you generate from your atlassian account, not your actual password)
 * If using VS Code, run a debug session using the "Launch via npm" configuration
+* From the command line install dependencies `npm install --no-save` (no save leaves the lock file unchanged)
 * From the command link run it with npm using `npm start`
 
 ## Dashboard query configuration

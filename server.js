@@ -30,8 +30,9 @@ const METRICS = [
   'High visibility tickets',
   'Initiative Release Projection',
   'Release Projection',
-  'Release Epics'
-  // 'Defect raise rate'
+  'Release Epics',
+  'Defect raise rate',
+  'Average cycle time for ticket size'
 ];
 const STATUSES = [
   'Backlog',
@@ -201,7 +202,6 @@ function unsafeGetFullIssueArrayCacheUpdatePromise(requestId, window, extraIssue
     }
 
     return gJira.search.search({ jql: jql, startAt: startAt, expand: ["changelog"] }).then((jiraRes) => {
-
       let totalResults = jiraRes.total;
       let maxResults = jiraRes.maxResults;
 
@@ -482,9 +482,9 @@ function unsafeGetDefectRaiseRateCacheUpdatePromise(requestId, window, futureSta
   // }
 }
 
-function getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId) {
+function getCycleTimeCacheUpdatePromise(cacheKey, requestId, window, fromStatuses, futureStatuses, projectKey, teamId, averageCycleTimePerPoint = true, storySize = null, days = 14) {
   return gCacheManagementLock.acquire("cycleTimeCache", () => {
-    return unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId);
+    return unsafeGetCycleTimeCacheUpdatePromise(cacheKey, requestId, window, fromStatuses, futureStatuses, projectKey, teamId, averageCycleTimePerPoint, storySize, days);
   }).then( (result) => {
     // lock released
     return result;
@@ -492,16 +492,18 @@ function getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureS
 }
 
 /**
- * 
+ *
+ * @param {string} cacheKey The key to use for storing the results in the cache
  * @param {string} requestId The Request ID from Grafana, e.g. Q123
  * @param {{now: Date, from: Date, to: Date, intervalMs: number, maxDataPoints: number}} window The window to return data in
  * @param {*} fromStatuses 
  * @param {*} futureStatuses 
  * @param {*} projectKey 
  */
-function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId) {
+function unsafeGetCycleTimeCacheUpdatePromise(cacheKey, requestId, window, fromStatuses, futureStatuses, projectKey, teamId, averageCycleTimePerPoint, storySize, days) {
 
-  let cache = gCycleTimeCache[projectKey + "," + teamId];
+
+  let cache = gCycleTimeCache[cacheKey];
   let outOfDate = true;
   if (cache != null) {
     // Check time window
@@ -515,55 +517,52 @@ function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, f
 
     return getFullIssueArrayCacheUpdatePromise(requestId, window).then((fullIssuesArray) => {
 
-      console.info(requestId + ": Executing getCycleTimeCacheUpdatePromise (projectKey=" + projectKey + ", teamId=" + teamId + ")");
+      console.info(requestId + ": Executing getCycleTimeCacheUpdatePromise (projectKey=" + projectKey + ", teamId=" + teamId + ", storySize=" + storySize + ")");
 
-      // Filter out issues we don't want (Epics, Initatives, projects, teams)
+      // Filter out issues we don't want (Epics, Initiatives, projects, teams)
       let filteredIssueArray = filterOutIssues(fullIssuesArray, projectKey, teamId);
+      if (storySize !== null && storySize !== undefined) {
+        filteredIssueArray = filteredIssueArray.filter((issue) => {
+          return getIssueSize(issue) === storySize;
+        });
+      }
 
       // Determine the datetime at which each issue was completed
       let statusChangesByIssueKeyMap = getStatusChangesByIssueKeyMap(filteredIssueArray);
       let completionEvents = getCompletionEvents(statusChangesByIssueKeyMap, futureStatuses, true);
       // Sort the map by time
       let sortedCompletionEvents = completionEvents.sort((a, b) => { return a.completionTransitionDateTime - b.completionTransitionDateTime });
-
       let outputData = [];
       let calcEndDatetime = window.to.getTime() > window.now.getTime() ? window.now : window.to;
-      let completedIssueIndex = 0
-      for (let curDateTime = new Date(window.from); curDateTime <= calcEndDatetime; curDateTime.setTime(curDateTime.getTime() + window.intervalMs)) {
+      let completedIssueIndex = 0;
 
-        let twoweeksago = new Date(curDateTime).setDate(curDateTime.getDate() - 14);
+      const numDays = days || 14;
+      for (let curDateTime = new Date(window.from); curDateTime <= calcEndDatetime; curDateTime.setTime(curDateTime.getTime() + window.intervalMs)) {
+        let startDate = new Date(curDateTime);
+        startDate.setDate(curDateTime.getDate() - numDays)
 
         // Sort the events by time and loop through the result, calculating rolling cycle time for each issue
         for (; completedIssueIndex < sortedCompletionEvents.length; completedIssueIndex++) {
-          let calculateMetric = false;
-          if (completedIssueIndex == sortedCompletionEvents.length) {
-            // The current date exceeds the end of the completed issues
-            calculateMetric = true;
-          } else {
-            const completedIssue = sortedCompletionEvents[completedIssueIndex];
-            const dateTime = completedIssue.completionTransitionDateTime;
-            if (dateTime > curDateTime) calculateMetric = true;
-          }
+          const completedIssue = sortedCompletionEvents[completedIssueIndex];
+          const completionDate = completedIssue.completionTransitionDateTime;
+          let calculateMetric = (completionDate >= startDate && completionDate <= curDateTime);
 
           // TODO: LOADS of this code is the same as the velocity calc code - consolidate these
-          
-          // Get the list of issues completed in the 2 weeks prior to this issue
+          // Get the list of issues completed in the last numDays prior to this issue
           if (calculateMetric) {
-            let twoWeekCompletedIssueList = [];
-            for (let issueIndex = completedIssueIndex - 1; issueIndex >= 0; issueIndex--) {
-              const priorCompletionEvent = sortedCompletionEvents[issueIndex];
-              // If it's more than 2 weeks ago, then it doesn't count in the velocity and everything else in the array is older so break out
-              if (priorCompletionEvent.completionTransitionDateTime < twoweeksago) break;
-
-              twoWeekCompletedIssueList.push(priorCompletionEvent.issue.key);
+            let issuesCompletedWithinPeriod = [];
+            let endIndex = completedIssueIndex;
+            while(endIndex < sortedCompletionEvents.length && sortedCompletionEvents[endIndex].completionTransitionDateTime <= curDateTime) {
+              issuesCompletedWithinPeriod.push(sortedCompletionEvents[endIndex].issue.key);
+              endIndex++;
             }
 
             // Filter the map by these issues
             var filteredStatusChangeMap = Object.fromEntries(Object.entries(statusChangesByIssueKeyMap).filter(([k,v]) => {
-              return twoWeekCompletedIssueList.includes(k);
+              return issuesCompletedWithinPeriod.includes(k);
             }));
             // Calculate the average cycle time for these issues
-            let avgCycleTimePerPoint = calculateAverageCycleTimePerPointForIssues(filteredStatusChangeMap, fromStatuses, futureStatuses, curDateTime);
+            let avgCycleTimePerPoint = calculateAverageCycleTimeForIssues(filteredStatusChangeMap, fromStatuses, futureStatuses, curDateTime, averageCycleTimePerPoint);
 
             outputData.push([avgCycleTimePerPoint, Math.floor(curDateTime)]);
             break;
@@ -572,7 +571,7 @@ function unsafeGetCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, f
       }
 
       // Update the cache
-      gCycleTimeCache[projectKey + "," + teamId] = {
+      gCycleTimeCache[cacheKey] = {
         cycleTimes: outputData,
         fromStatuses: fromStatuses,
         futureStatuses: futureStatuses,
@@ -674,7 +673,8 @@ function getPromisesForMetric(requestId, window, target, result) {
     case METRICS[9]: return getInitiativeProjectionPromise(requestId, window, target, result);
     case METRICS[10]: return getReleaseProjectionPromise(requestId, window, target, result);
     case METRICS[11]: return getReleaseEpicsPromise(requestId, window, target, result);
-    case METRICS[12]: return getDefectRaiseRatePromise(requestId, window, target, result);
+    // case METRICS[12]: return getDefectRaiseRatePromise(requestId, window, target, result);
+    case METRICS[13]: return getAverageCycleTimeMetrics(requestId, window, target, result);
   }
 }
 
@@ -1030,10 +1030,41 @@ function getCurrent2WeekAverageCycleTimePerPointPromise(requestId, window, targe
   let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
   let teamId = getTeamId(target);
   let projectKey = getProjectKey(target);
+  const cacheKey = projectKey + "," + teamId;
+  return getCycleTimeCacheUpdatePromise(cacheKey, requestId, window, fromStatuses, futureStatuses, projectKey, teamId).then(() => {
 
-  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId).then(() => {
+    let cache = gCycleTimeCache[cacheKey].cycleTimes;
+    return result.push({
+      target: target.refId,
+      datapoints: [cache[cache.length-1]]
+    });
+  });
+}
 
-    let cache = gCycleTimeCache[projectKey + "," + teamId].cycleTimes;
+
+/**
+ *
+ * @param {string} requestId The Request ID from Grafana, e.g. Q123
+ * @param {*} window
+ * @param {*} target
+ * @param {*} result
+ */
+function getAverageCycleTimeMetrics(requestId, window, target, result, averageCycleTimePerPoint = false) {
+
+  // const futureStatuses = getFutureStatusesFromStartingStatus(getToStatus(target));
+  const futureStatuses = [getToStatus(target)];
+  // const fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
+  const fromStatuses = getFromStatus(target);
+  const teamId = getTeamId(target);
+  const projectKey = getProjectKey(target);
+  const storyPoints = getStoryPoints(target);
+  const days = getDays(target, 30);
+
+  const cacheKey = projectKey + "," + teamId + "," + storyPoints + "," + averageCycleTimePerPoint + "," + days;
+
+  return getCycleTimeCacheUpdatePromise(cacheKey, requestId, window, fromStatuses, futureStatuses, projectKey, teamId, averageCycleTimePerPoint, storyPoints, days).then(() => {
+
+    let cache = gCycleTimeCache[cacheKey].cycleTimes;
     return result.push({
       target: target.refId,
       datapoints: [cache[cache.length-1]]
@@ -1054,9 +1085,10 @@ function getRolling2WeekAverageCycleTimePerPointPromise(requestId, window, targe
   let fromStatuses = getPreviousStatusesFromStartingStatus(getFromStatus(target));
   let teamId = getTeamId(target);
   let projectKey = getProjectKey(target);
+  const cacheKey = projectKey + "," + teamId;
 
-  return getCycleTimeCacheUpdatePromise(requestId, window, fromStatuses, futureStatuses, projectKey, teamId).then(() => {
-    let cycleTimes = gCycleTimeCache[projectKey + "," + teamId].cycleTimes;
+  return getCycleTimeCacheUpdatePromise(cacheKey, requestId, window, fromStatuses, futureStatuses, projectKey, teamId).then(() => {
+    let cycleTimes = gCycleTimeCache[cacheKey].cycleTimes;
     // Trim the data to start at the beginning of the return window
     let filteredCycleTimes = cycleTimes.filter(value => {return value[1] >= Math.floor(window.from)});
     // If the time frame included a future projection, then add a projection point based on the last velocity calculated
@@ -1329,6 +1361,24 @@ function getTeamId(target) {
  */
 function getProjectKey(target) {
   return getRequestProperty(target, 'projectKey');
+}
+
+/**
+ *
+ * @param {*} target
+ * @return {number} the story points e.g. 1
+ */
+function getStoryPoints(target) {
+  return getRequestProperty(target, 'storyPoints');
+}
+
+/**
+ *
+ * @param {*} target
+ * @return {number} the number of days
+ */
+function getDays(target, defaultValue = null) {
+  return getRequestProperty(target, 'days', defaultValue);
 }
 
 /**
@@ -2117,6 +2167,7 @@ function getStatusChangesByIssueKeyMap(issues) {
   // Loop through each issue and record the datetime at which they transitioned forwards in state
   issues.forEach(issue => {
     // Build up an array of status changes
+
     let statusChanges = [];
     issue.changelog.histories.forEach(history => {
       let changeDateTime = new Date(history.created);
@@ -2196,7 +2247,7 @@ function getCompletionEvents(statusChangeMap, toStatuses, completionOnly = false
         completionEvents.push(completionEvent);
       }
     });
-  };
+  }
 
   return completionEvents;
 
@@ -2229,6 +2280,36 @@ function calculateAverageCycleTimePerPointForIssues(statusChangeMap, fromStatuse
 
   // Average them
   return totalCycleTimePerPoint / (Object.keys(statusChangeMap).length - ignoreIssues);
+
+}
+
+
+/**
+ *
+ * @param {Object.<string, {issue: Object, statusChanges: {fromStatus: string, toStatus: string, datetime: Date}[]}>} statusChangeMap - dictionary of JIRA issue keys mapped to a datetime ascending ordered array of status changes (including ONLY issues that COMPLETE)
+ * @return {number} The average cycle time per point - will return NaN if it's effectively infinity (i.e. nothing's moved)
+ */
+function calculateAverageCycleTimeForIssues(statusChangeMap, fromStatuses, toStatuses, toDateTime, perPoint) {
+
+  let totalCycleTimeMetric = 0;
+  let ignoreIssues = 0;
+  // For each issue's transitions
+  for (const issueKey in statusChangeMap) {
+    // Get their cycle time (from transition out of last from status to transition to first to status)
+    const cycleTime = calculateCycleTime(statusChangeMap[issueKey].statusChanges, fromStatuses, toStatuses, toDateTime);
+    // Divide that cycle time by the ticket size
+    const size = getIssueSize(statusChangeMap[issueKey].issue);
+    // Ignore "0" point stories in cycle time calculations, can abstract this block to a callback
+    if (size == 0 && perPoint === true) {
+      ignoreIssues++;
+    } else {
+      // Add it to the total
+      totalCycleTimeMetric += cycleTime / (perPoint ? size : 1);
+    }
+  }
+
+  // Average them
+  return totalCycleTimeMetric / (Object.keys(statusChangeMap).length - ignoreIssues);
 
 }
 
@@ -2319,12 +2400,14 @@ function filterOutIssues(fullIssuesArray, projectKey, teamId) {
   let filteredIssueArray = fullIssuesArray.filter((issue) => {
     return issue.fields.issuetype.name != "Initiative" && issue.fields.issuetype.name != "Epic";
   });
+
   // If we're only interested in a specific project (which is likely) then filter it down further
   if (projectKey != null) {
     filteredIssueArray = filteredIssueArray.filter((issue) => {
       return issue.fields.project.key == projectKey;
     });
   }
+
   // We might also be interested in only a specific team - note that both project and team filters can be used simultaneously
   if (teamId != null) {
     filteredIssueArray = filteredIssueArray.filter((issue) => {
