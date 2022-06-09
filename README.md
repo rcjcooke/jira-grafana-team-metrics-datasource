@@ -60,6 +60,20 @@ Example: `{"toStatus": "Deployed", "fromStatus": "Prioritised", "projectKey": "E
 | projectKey | The project for which cycle time is being calculated. Only issues that are part of the specified project at the time of completion count towards the cycle time | Any JIRA project key | The JIRA project key |
 | teamId | The team for which cycle time is being calculated. Only issues that are assigned to the specified team when the chart is calculated will count towards the cycle time | Any JIRA team ID number | The JIRA team ID number |
 
+### Average cycle time for ticket size
+
+Example: `{"toStatus": "Deployed", "fromStatus": "Prioritised", "projectKey": "ENG", "teamId": 9, "storyPoints": 1, "days": 30}`
+
+| Key         | Description                                                                                                                                                                                           | Possible Values                    | Descriptions            |
+|-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------|-------------------------|
+| toStatus    | When a ticket enters this status, the cycle-time clock stops                                                                                                                                          | Any status in the value stream     | The name of the status  |
+| fromStatus  | When a ticket leaves this status, the cycle-time clock starts                                                                                                                                         | Any status in the value stream     | The name of the status  |
+| projectKey  | The project for which cycle time is being calculated. Only issues that are part of the specified project at the time of completion count towards the cycle time                                       | Any JIRA project key               | The JIRA project key    |
+| teamId      | The team for which cycle time is being calculated. Only issues that are assigned to the specified team when the chart is calculated will count towards the cycle time                                 | Any JIRA team ID number            | The JIRA team ID number |
+| storyPoints | The ticket size that cycle time should be calculated for.                                                                                                                                             | Any JIRA story points e.g. 1, 2, 3 | The ticket story points |
+| days        | Defaults to 14. The range of days within which to check for ticket completion. In the time series results for the x value of 16th May, we will consider ticket completions between 2nd May - 16th May | Any JIRA story points e.g. 1, 2, 3 | The ticket story points |
+
+
 ### Release Progress
 
 Example: `{"versionIds": [10173, 10166]}`
