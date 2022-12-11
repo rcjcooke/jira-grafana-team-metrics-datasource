@@ -16,7 +16,7 @@
     "dateformat": "^3.0.3",
     "dotenv": "^8.2.0",
     "esm": "^3.2.25",
-    "express": "^4.17.1",
+    "express": "^4.17.3",
     "jira-connector": "^2.16.1",
     "morgan": "^1.10.0",
     "passport": "^0.4.0",
